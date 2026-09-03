@@ -79,6 +79,8 @@ export interface SimParams {
   spongeMax?: number;
   /** Courant number (fraction of the stability limit). */
   courant: number;
+  /** Compute backend. 'auto' uses WebGPU when available and falls back to CPU. */
+  backend?: 'auto' | 'gpu' | 'cpu';
 }
 
 export const DEFAULT_PARAMS: SimParams = {

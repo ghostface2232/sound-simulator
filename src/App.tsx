@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_PARAMS, type Scene, type SimParams } from './engine/scene';
-import { PRESETS } from './engine/presets';
+import { PRESETS, pistonBaffleScene } from './engine/presets';
+import type { ParityReport } from './engine/runner';
 import type { SimResult } from './engine/analysis';
 import { hasErrors, type Diagnostic } from './engine/checks';
 import { diagnose } from './engine/runner';
@@ -36,6 +37,8 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<SimResult | null>(null);
   const [runWarnings, setRunWarnings] = useState<Diagnostic[]>([]);
+  const [parity, setParity] = useState<ParityReport | null>(null);
+  const [parityBusy, setParityBusy] = useState(false);
   const [polarFreq, setPolarFreq] = useState(5000);
   const [colorScale, setColorScale] = useState(0.05);
 
@@ -63,13 +66,16 @@ export default function App() {
           setResult({ freqs: m.freqs, angles: m.angles, db: m.db, dt: m.dt, nSteps: m.nSteps, fMinReliable: m.fMinReliable });
           setRunWarnings(m.warnings);
           setStatus('done'); setProgress(1);
-          setMessage(`완료: ${m.nSteps} 스텝, ${(m.elapsedMs / 1000).toFixed(1)} s · 표시 대역 ${Math.round(m.fMinReliable)} Hz 이상`);
+          setMessage(`완료 (${m.backend.toUpperCase()}): ${m.nSteps} 스텝, ${(m.elapsedMs / 1000).toFixed(1)} s · 표시 대역 ${Math.round(m.fMinReliable)} Hz 이상`);
+          break;
+        case 'parity-result':
+          setParity(m.report); setParityBusy(false);
           break;
         case 'stopped':
           setStatus('idle'); setMessage('중단됨');
           break;
         case 'error':
-          setStatus('error'); setMessage(m.message);
+          setStatus('error'); setMessage(m.message); setParityBusy(false);
           break;
       }
     };
@@ -105,6 +111,14 @@ export default function App() {
     const msg: WorkerIn = { type: 'run', scene: parsed.scene as Scene, params, frameEvery: 25 };
     workerRef.current.postMessage(msg);
   }, [blocked, parsed, params]);
+
+  const runParity = useCallback(() => {
+    if (!workerRef.current) return;
+    setParity(null); setParityBusy(true);
+    const scene = pistonBaffleScene(20, 320, 150);
+    const msg: WorkerIn = { type: 'parity', scene, params: { ...params, dx: 2, durationMs: 3, fMax: 10000, spongeCells: 50 } };
+    workerRef.current.postMessage(msg);
+  }, [params]);
 
   const stop = useCallback(() => {
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
@@ -145,6 +159,13 @@ export default function App() {
           <label>흡수층 (cells)
             <input type="number" step="10" min="10" max="150" value={params.spongeCells} onChange={setNum('spongeCells')} />
           </label>
+          <label>백엔드
+            <select value={params.backend ?? 'auto'} onChange={(e) => setParams({ ...params, backend: e.target.value as SimParams['backend'] })}>
+              <option value="auto">auto (WebGPU 우선)</option>
+              <option value="gpu">WebGPU</option>
+              <option value="cpu">CPU</option>
+            </select>
+          </label>
         </div>
 
         <DiagnosticList items={diagnostics} />
@@ -160,6 +181,17 @@ export default function App() {
           {cells > 0 && <span className="muted"> · {grid!.Nr}×{grid!.Nz} = {cells.toLocaleString()} cells</span>}
         </p>
         {status === 'done' && <DiagnosticList items={runWarnings} />}
+
+        <div className="row">
+          <button onClick={runParity} disabled={parityBusy || status === 'running'}>CPU/GPU 일치 검사</button>
+          {parityBusy && <span className="muted">검사 중…</span>}
+        </div>
+        {parity && (
+          <p className="muted small">
+            배플 피스톤 dx 2 mm, {parity.nSteps} 스텝: 시계열 최대 상대 차이 {(parity.maxRelDiff * 100).toExponential(2)} %,
+            스펙트럼 최대 차이 {parity.maxDbDiff.toFixed(3)} dB · CPU {(parity.cpuMs / 1000).toFixed(1)} s / GPU {(parity.gpuMs / 1000).toFixed(1)} s
+          </p>
+        )}
 
         <label className="grow">씬 JSON (mm, r-z 단면)
           <textarea value={sceneText} onChange={(e) => setSceneText(e.target.value)} spellCheck={false} />

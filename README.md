@@ -16,7 +16,9 @@ npm run validate   # 무한 배플 피스톤 이론값과 비교 (PASS 확인)
 
 - `src/engine/scene.ts` — 씬(형상) 스키마. mm 단위 r-z 단면. rect/polygon, rigid/fabric/air, piston/radial 드라이버.
 - `src/engine/rasterize.ts` — 씬 → 격자(고체 마스크, 흐름저항, 소스 면, 측정점).
-- `src/engine/fdtd.ts` — 축대칭 FDTD 솔버(CPU). WGSL 포팅을 염두에 둔 단순 루프.
+- `src/engine/fdtd.ts` — 축대칭 FDTD 솔버(CPU). 참조 구현이자 node 검증용.
+- `src/engine/gpu.ts` — 같은 수식의 WebGPU(WGSL) 구현. 속도·소스·압력·측정점 4개 컴퓨트 패스를 스텝당 실행하고
+  측정점 시계열은 GPU에 누적. `backend: auto | gpu | cpu`, UI의 "CPU/GPU 일치 검사"로 두 백엔드를 비교할 수 있다.
 - `src/engine/analysis.ts` — 임펄스 응답 → 주파수 응답, 지향성.
 - `src/engine/presets.ts` — 프리셋 씬(측면 방사형, 정면, 상향 360, 검증용 배플 피스톤).
 - `src/worker/sim.worker.ts` — Web Worker 실행.

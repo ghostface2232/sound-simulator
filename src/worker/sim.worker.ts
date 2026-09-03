@@ -1,16 +1,18 @@
 /// <reference lib="webworker" />
-import { runSimulation } from '../engine/runner';
+import { compareBackends, runSimulation, type BackendUsed, type ParityReport } from '../engine/runner';
 import type { Diagnostic } from '../engine/checks';
 import type { Scene, SimParams } from '../engine/scene';
 
 export type WorkerIn =
   | { type: 'run'; scene: Scene; params: SimParams; frameEvery: number }
+  | { type: 'parity'; scene: Scene; params: SimParams }
   | { type: 'stop' };
 
 export type WorkerOut =
   | { type: 'grid'; Nr: number; Nz: number; dx: number; zMin: number; solid: Uint8Array; sigma: Float32Array; probes: { fr: number; fz: number; angleDeg: number }[] }
   | { type: 'frame'; step: number; nSteps: number; p: Float32Array }
-  | { type: 'done'; freqs: Float32Array; angles: Float32Array; db: Float32Array; dt: number; nSteps: number; fMinReliable: number; warnings: Diagnostic[]; elapsedMs: number }
+  | { type: 'done'; freqs: Float32Array; angles: Float32Array; db: Float32Array; dt: number; nSteps: number; fMinReliable: number; warnings: Diagnostic[]; elapsedMs: number; backend: BackendUsed }
+  | { type: 'parity-result'; report: ParityReport }
   | { type: 'stopped' }
   | { type: 'error'; message: string };
 
@@ -21,8 +23,17 @@ const post = (m: WorkerOut, transfer: Transferable[] = []) => (self as unknown a
 self.onmessage = async (e: MessageEvent<WorkerIn>) => {
   const msg = e.data;
   if (msg.type === 'stop') { stopRequested = true; return; }
-  if (msg.type !== 'run') return;
 
+  if (msg.type === 'parity') {
+    try {
+      post({ type: 'parity-result', report: await compareBackends(msg.scene, msg.params) });
+    } catch (err) {
+      post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+
+  if (msg.type !== 'run') return;
   stopRequested = false;
   const t0 = performance.now();
   try {
@@ -41,12 +52,12 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
     }, msg.frameEvery);
 
     if (!out) { post({ type: 'stopped' }); return; }
-    const { result, warnings } = out;
+    const { result, warnings, backend } = out;
     post({
       type: 'done',
       freqs: result.freqs, angles: result.angles, db: result.db,
       dt: result.dt, nSteps: result.nSteps, fMinReliable: result.fMinReliable,
-      warnings, elapsedMs: performance.now() - t0,
+      warnings, elapsedMs: performance.now() - t0, backend,
     });
   } catch (err) {
     post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
