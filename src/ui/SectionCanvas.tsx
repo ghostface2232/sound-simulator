@@ -2,7 +2,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import type { Scene, PathShape, PathNode, Driver, ShapeRole } from '../engine/scene';
 import type { Diagnostic } from '../engine/checks';
 import {
-  cornerNode, distToSegment, driverSegment, ellipsePath, isSmoothNode, nearestOnPath, pointInPolygon, sceneBounds,
+  bandNodes, bandOf, cornerNode, distToSegment, driverSegment, ellipsePath, isSmoothNode, nearestOnPath, pointInPolygon, sceneBounds,
+  type Band,
   segmentIsLine, shapeToPath, shapeToPolygon, smoothNode, splitSegment, type Pt,
 } from '../engine/geometry';
 
@@ -60,6 +61,8 @@ type Drag =
   | { kind: 'anchor'; index: number; node: number; orig: PathNode; start: Pt }
   | { kind: 'handle'; index: number; node: number; which: 'in' | 'out' }
   | { kind: 'shape'; index: number; orig: PathNode[]; start: Pt }
+  | { kind: 'bandEdge'; index: number; edge: 'top' | 'bottom'; band: Band }
+  | { kind: 'bandMove'; index: number; band: Band; start: Pt }
   | { kind: 'driverEnd'; index: number; end: 0 | 1 }
   | { kind: 'driver'; index: number; orig: Driver; start: Pt }
   | { kind: 'measureRadius' }
@@ -261,6 +264,12 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
 
     if (p.selection?.kind === 'shape' && scene.shapes[p.selection.index]) {
       const idx = p.selection.index;
+      const band = bandOf(scene.shapes[idx]);
+      if (band) {
+        const rc = (band.r0 + band.r1) / 2;
+        if (near([rc, band.z1], cursor)) return { sel: { kind: 'shape', index: idx }, drag: { kind: 'bandEdge', index: idx, edge: 'top', band } };
+        if (near([rc, band.z0], cursor)) return { sel: { kind: 'shape', index: idx }, drag: { kind: 'bandEdge', index: idx, edge: 'bottom', band } };
+      }
       const nodes = nodesOf(idx);
       const vi = p.selection.vertex;
       // Handles of the selected anchor and the facing handles of its neighbours.
@@ -295,7 +304,11 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const pts = shapeToPolygon(scene.shapes[k]);
       const nodes = nodesOf(k);
       const hit = pointInPolygon(rm, zm, pts) || nearestOnPath(nodes, cursor).dist <= tol;
-      if (hit) return { sel: { kind: 'shape', index: k }, drag: { kind: 'shape', index: k, orig: cloneNodes(nodes), start: cursor } };
+      if (hit) {
+        const band = bandOf(scene.shapes[k]);
+        if (band) return { sel: { kind: 'shape', index: k }, drag: { kind: 'bandMove', index: k, band, start: cursor } };
+        return { sel: { kind: 'shape', index: k }, drag: { kind: 'shape', index: k, orig: cloneNodes(nodes), start: cursor } };
+      }
     }
     {
       const m = scene.measure;
@@ -379,6 +392,18 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         writeNodes(d.index, d.orig.map((n) => translateNode(n, dr, dz)), false);
         break;
       }
+      case 'bandEdge': {
+        const z = snapV(zm);
+        const b = { ...d.band };
+        if (d.edge === 'top') b.z1 = Math.max(b.z0 + p.snap, z); else b.z0 = Math.min(b.z1 - p.snap, z);
+        writeNodes(d.index, bandNodes(b), false);
+        break;
+      }
+      case 'bandMove': {
+        const dz = snapV(zm - d.start[1]);
+        writeNodes(d.index, bandNodes({ ...d.band, z0: d.band.z0 + dz, z1: d.band.z1 + dz }), false);
+        break;
+      }
       case 'driverEnd': {
         const dr = scene.drivers[d.index];
         if (dr.kind === 'piston') {
@@ -460,6 +485,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     const [xm, zm] = toMm(e.clientX - rect.left, e.clientY - rect.top, v);
     const cur: Pt = [Math.abs(xm), zm];
     const idx = p.selection.index;
+    if (bandOf(p.scene.shapes[idx])) return; // bands have no anchors to edit
     const nodes = cloneNodes(nodesOf(idx));
     const tol = HANDLE_PX / v.s;
     // Double-click an anchor: toggle corner <-> smooth.
@@ -714,7 +740,24 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
       }
     };
-    if (sel?.kind === 'shape' && scene.shapes[sel.index]) {
+    const selBand = sel?.kind === 'shape' && scene.shapes[sel.index] ? bandOf(scene.shapes[sel.index]) : null;
+    if (sel?.kind === 'shape' && selBand) {
+      const nodes = shapeNodes[sel.index];
+      ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2;
+      for (const mirror of [false, true]) { pathNodes(ctx, nodes, mirror); ctx.stroke(); }
+      // Two bar handles: start (bottom) and end (top) of the band.
+      const rc = (selBand.r0 + selBand.r1) / 2, halfW = Math.max((selBand.r1 - selBand.r0) / 2, 2);
+      for (const zz of [selBand.z0, selBand.z1]) {
+        for (const m of [1, -1]) {
+          const [x0, y] = P(m * (rc - halfW), zz), [x1] = P(m * (rc + halfW), zz);
+          ctx.beginPath(); ctx.rect(Math.min(x0, x1) - 3, y - 3, Math.abs(x1 - x0) + 6, 6);
+          ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
+        }
+      }
+      const [lx, ly] = P(selBand.r1 + 3, (selBand.z0 + selBand.z1) / 2);
+      ctx.fillStyle = SELECT_COLOR; ctx.font = '11px system-ui';
+      ctx.fillText(`z ${selBand.z0} → ${selBand.z1}  (${(selBand.z1 - selBand.z0).toFixed(1)} mm)`, lx, ly + 4);
+    } else if (sel?.kind === 'shape' && scene.shapes[sel.index]) {
       const nodes = shapeNodes[sel.index];
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2;
       for (const mirror of [false, true]) { pathNodes(ctx, nodes, mirror); ctx.stroke(); }

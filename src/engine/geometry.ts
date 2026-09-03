@@ -265,6 +265,39 @@ export function driverBodyShape(d: Driver, depth = 16): PathShape {
   return { kind: 'path', nodes: pts.map((p) => ({ p })), material: 'rigid', role: 'driver', label: `${d.label ?? 'driver'} body` };
 }
 
+export interface Band { r0: number; r1: number; z0: number; z1: number }
+
+/** Slots and fabric are edited as bands (z start + length, radial extent) when they are axis-aligned rects. */
+export function bandOf(s: Shape): Band | null {
+  const role = s.role ?? defaultRole(s.material);
+  if (role !== 'slot' && role !== 'fabric') return null;
+  return asAxisAlignedRect(shapeToPolygon(s));
+}
+
+export function bandNodes(b: Band): PathNode[] {
+  const r0 = Math.max(0, Math.min(b.r0, b.r1)), r1 = Math.max(b.r0, b.r1), z0 = Math.min(b.z0, b.z1), z1 = Math.max(b.z0, b.z1);
+  return [{ p: [r0, z0] }, { p: [r1, z0] }, { p: [r1, z1] }, { p: [r0, z1] }];
+}
+
+/** Outer radius of the rigid parts (where a side slot or fabric would go). */
+export function outerRadius(scene: Scene): number {
+  let r = 0;
+  for (const s of scene.shapes) if (s.material === 'rigid') for (const [rr] of shapeToPolygon(s)) r = Math.max(r, rr);
+  return r;
+}
+
+/** Default side slot cutting the outer wall (2 mm past both faces, wall assumed <= 4 mm). */
+export function defaultSlot(scene: Scene, z0 = 3, length = 10): PathShape {
+  const R = outerRadius(scene) || 35;
+  return { kind: 'path', nodes: bandNodes({ r0: R - 6, r1: R + 2, z0, z1: z0 + length }), material: 'air', role: 'slot', label: `slot ${scene.shapes.filter((s) => s.role === 'slot').length + 1}` };
+}
+
+/** Default fabric layer on the outer surface. */
+export function defaultFabric(scene: Scene, z0 = 2, height = 12, thickness = 1): PathShape {
+  const R = outerRadius(scene) || 35;
+  return { kind: 'path', nodes: bandNodes({ r0: R, r1: R + thickness, z0, z1: z0 + height }), material: 'fabric', role: 'fabric', sigma: 2e5, label: `fabric ${scene.shapes.filter((s) => s.role === 'fabric').length + 1}` };
+}
+
 export function materialForRole(role: ShapeRole, current?: Material): Material {
   switch (role) {
     case 'housing': case 'reflector': case 'driver': return 'rigid';

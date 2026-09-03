@@ -137,6 +137,22 @@ async function main() {
     s.shapes.push(body);
     assert.deepEqual(cg(s).filter((d) => d.severity === 'error'), []);
   });
+  await test('slots and fabric are bands; defaults sit on the outer wall and pass checks', async () => {
+    const { bandOf, bandNodes, defaultSlot, defaultFabric, outerRadius, checkGeometry: cg } = await import('../src/engine/geometry');
+    const s = normalizeScene(sideRadialScene());
+    const slot = s.shapes.find((x) => x.role === 'slot')!, fabric = s.shapes.find((x) => x.role === 'fabric')!, refl = s.shapes.find((x) => x.role === 'reflector')!;
+    assert.deepEqual(bandOf(slot), { r0: 31.5, r1: 37, z0: 3, z1: 13 });
+    assert.deepEqual(bandOf(fabric), { r0: 35, r1: 36, z0: 2, z1: 14 });
+    assert.equal(bandOf(refl), null, 'a triangle is not a band');
+    assert.deepEqual(bandNodes({ r0: 5, r1: 2, z0: 9, z1: 4 }).map((n) => n.p), [[2, 4], [5, 4], [5, 9], [2, 9]]);
+    assert.equal(outerRadius(s), 35);
+    const s2 = { ...s, shapes: [...s.shapes.filter((x) => x.role !== 'slot' && x.role !== 'fabric'), defaultSlot(s), defaultFabric(s)] };
+    const ns = defaultSlot(s), nf = defaultFabric(s);
+    assert.deepEqual(bandOf(ns), { r0: 29, r1: 37, z0: 3, z1: 13 });
+    assert.deepEqual(bandOf(nf), { r0: 35, r1: 36, z0: 2, z1: 14 });
+    assert.deepEqual(cg(s2).filter((d) => d.severity === 'error'), []);
+    assert.ok(!cg(s2).some((d) => d.code === 'slot-no-wall'), 'default slot cuts the wall');
+  });
   await test('SVG export writes cubic paths that parse back to the same anchors and handles', () => {
     const s = normalizeScene(sideRadialScene());
     const refl = s.shapes.findIndex((x) => x.role === 'reflector');
