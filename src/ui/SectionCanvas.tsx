@@ -819,6 +819,13 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     if (mouseMm) ctx.fillText(`r ${mouseMm[0].toFixed(1)}  z ${mouseMm[1].toFixed(1)} mm`, size.w - 150, size.h - 8);
   }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, toPx, snapR, snapV]);
 
+  // Debug hook for automated UI checks: mm -> canvas px mapping and the scene being drawn.
+  useEffect(() => {
+    (window as unknown as { __sectionCanvas?: unknown }).__sectionCanvas = {
+      toPx: (r: number, z: number) => toPx(r, z, view), scene: p.scene, selection: p.selection, canvas: canvasRef.current,
+    };
+  }, [view, p.scene, p.selection, toPx]);
+
   const cursor = p.tool !== 'select' ? 'crosshair' : dragRef.current?.kind === 'pan' ? 'grabbing' : 'default';
 
   return (
