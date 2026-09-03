@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Scene, Driver, ShapeRole, Material, PathNode } from '../engine/scene';
-import { bandNodes, bandOf, cornerNode, defaultFabric, defaultSlot, driverBodyShape, isSmoothNode, materialForRole, shapeToPath, smoothNode, type Pt } from '../engine/geometry';
+import { bandNodes, bandOf, cornerNode, defaultFabric, defaultSlot, driverBodyShape, isSmoothNode, materialForRole, maxAngleAboveFloor, rigidZRange, shapeToPath, smoothNode, type BandPlace, type Pt } from '../engine/geometry';
 import { validateScene } from '../engine/checks';
 import { sceneToSvg, svgToShapes } from '../engine/svg';
 import { ROLE_COLORS, type Selection, type Tool } from './SectionCanvas';
@@ -37,6 +37,7 @@ export function ShapePanel(p: Props) {
   const [svgError, setSvgError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const importReplaceRef = useRef(true);
+  const [bandWhere, setBandWhere] = useState<BandPlace>('side');
 
   useEffect(() => { if (jsonOpen) setJsonText(JSON.stringify(scene, null, 2)); }, [scene, jsonOpen]);
 
@@ -126,25 +127,51 @@ export function ShapePanel(p: Props) {
       <>
         <h3><i className="dot" style={{ background: ROLE_COLORS[role].fill, borderColor: ROLE_COLORS[role].stroke }} />{ROLE_COLORS[role].name} {i + 1}{s.label ? ` · ${s.label}` : ''}</h3>
         <div className="grid2">
-          <Num label="시작 z (mm)" value={b.z0} onChange={(v) => setBand({ z0: v, z1: v + (b.z1 - b.z0) })} />
-          <Num label={role === 'slot' ? '길이 (mm)' : '높이 (mm)'} value={b.z1 - b.z0} onChange={(v) => setBand({ z1: b.z0 + Math.max(0.5, v) })} />
-          {role === 'fabric' ? (
+          {b.axis === 'z' ? (
             <>
-              <Num label="안쪽 r (mm)" value={b.r0} onChange={(v) => setBand({ r0: Math.max(0, v), r1: Math.max(0, v) + (b.r1 - b.r0) })} />
-              <Num label="두께 (mm)" value={b.r1 - b.r0} step={0.25} onChange={(v) => setBand({ r1: b.r0 + Math.max(0.25, v) })} />
-              <Num label="흐름저항 σ (Pa·s/m²)" value={s.sigma ?? 2e5} step={10000} onChange={(v) => setShape(i, { sigma: v })} />
+              <Num label="시작 z (mm)" value={b.z0} onChange={(v) => setBand({ z0: v, z1: v + (b.z1 - b.z0) })} />
+              <Num label={role === 'slot' ? '길이 (mm)' : '높이 (mm)'} value={b.z1 - b.z0} onChange={(v) => setBand({ z1: b.z0 + Math.max(0.5, v) })} />
+              {role === 'fabric' ? (
+                <>
+                  <Num label="안쪽 r (mm)" value={b.r0} onChange={(v) => setBand({ r0: Math.max(0, v), r1: Math.max(0, v) + (b.r1 - b.r0) })} />
+                  <Num label="두께 (mm)" value={b.r1 - b.r0} step={0.25} onChange={(v) => setBand({ r1: b.r0 + Math.max(0.25, v) })} />
+                </>
+              ) : (
+                <>
+                  <Num label="절단 안쪽 r (mm)" value={b.r0} onChange={(v) => setBand({ r0: Math.max(0, v) })} />
+                  <Num label="절단 바깥 r (mm)" value={b.r1} onChange={(v) => setBand({ r1: v })} />
+                </>
+              )}
             </>
           ) : (
             <>
-              <Num label="절단 안쪽 r (mm)" value={b.r0} onChange={(v) => setBand({ r0: Math.max(0, v) })} />
-              <Num label="절단 바깥 r (mm)" value={b.r1} onChange={(v) => setBand({ r1: v })} />
+              <Num label="시작 r (mm)" value={b.r0} onChange={(v) => setBand({ r0: Math.max(0, v), r1: Math.max(0, v) + (b.r1 - b.r0) })} />
+              <Num label="길이 (mm)" value={b.r1 - b.r0} onChange={(v) => setBand({ r1: b.r0 + Math.max(0.5, v) })} />
+              {role === 'fabric' ? (
+                <>
+                  <Num label="아래 z (mm)" value={b.z0} onChange={(v) => setBand({ z0: v, z1: v + (b.z1 - b.z0) })} />
+                  <Num label="두께 (mm)" value={b.z1 - b.z0} step={0.25} onChange={(v) => setBand({ z1: b.z0 + Math.max(0.25, v) })} />
+                </>
+              ) : (
+                <>
+                  <Num label="절단 아래 z (mm)" value={b.z0} onChange={(v) => setBand({ z0: v })} />
+                  <Num label="절단 위 z (mm)" value={b.z1} onChange={(v) => setBand({ z1: v })} />
+                </>
+              )}
             </>
           )}
+          {role === 'fabric' && <Num label="흐름저항 σ (Pa·s/m²)" value={s.sigma ?? 2e5} step={10000} onChange={(v) => setShape(i, { sigma: v })} />}
+          <label>방향
+            <select value={b.axis} onChange={(e) => { const shapes = scene.shapes.slice(); shapes[i] = { ...s, axis: e.target.value as 'z' | 'r' }; p.onChange({ ...scene, shapes }); }}>
+              <option value="z">옆면 (z 방향)</option>
+              <option value="r">윗면/아랫면 (r 방향)</option>
+            </select>
+          </label>
           <label>이름<input value={s.label ?? ''} onChange={(e) => setShape(i, { label: e.target.value })} /></label>
         </div>
         <p className="muted small">
-          {role === 'slot' ? '환형 슬릿은 시작 높이와 길이만 의미가 있습니다. 절단 범위는 벽 양쪽 2 mm 여유를 두어 벽을 완전히 통과하게 하세요.' : '패브릭 층은 높이, 두께, 흐름저항으로 정의됩니다.'}
-          {' '}위/아래 핸들을 끌어 시작·끝을, 몸통을 끌어 위치를 바꿉니다.
+          {role === 'slot' ? '슬릿은 시작 위치와 길이만 의미가 있습니다. 절단 범위는 판 양쪽 2 mm 여유를 두어 완전히 통과하게 하세요.' : '패브릭 층은 위치, 길이, 두께, 흐름저항으로 정의됩니다.'}
+          {' '}양 끝 핸들을 끌어 시작·끝을, 몸통을 끌어 위치를 바꿉니다.
         </p>
         <div className="row">
           <button onClick={() => setShape(i, { role: 'other' })} title="띠 편집을 벗어나 앵커 4개를 자유롭게 편집">자유 형상으로 전환</button>
@@ -275,7 +302,21 @@ export function ShapePanel(p: Props) {
           <Num label="zMin (mm)" value={d.zMin} step={10} onChange={(v) => p.onChange({ ...scene, domain: { ...d, zMin: v } })} />
           <Num label="zMax (mm)" value={d.zMax} step={10} onChange={(v) => p.onChange({ ...scene, domain: { ...d, zMax: v } })} />
         </div>
-        <p className="muted small">요소를 클릭하면 속성이 여기에 나타납니다. 빈 곳 드래그로 이동, 휠로 확대. 회색 띠는 흡수층입니다.</p>
+        <h3>바닥</h3>
+        <div className="grid2">
+          <label className="inline"><input type="checkbox" checked={!!scene.floor?.enabled} onChange={(e) => {
+            const z = scene.floor?.z ?? rigidZRange(scene).z0;
+            const next: Scene = { ...scene, floor: { enabled: e.target.checked, z } };
+            if (e.target.checked) next.measure = { ...next.measure, angleMax: Math.min(next.measure.angleMax ?? 180, maxAngleAboveFloor(next)) };
+            p.onChange(next);
+          }} /> 바닥(무한 강체 평면) 사용</label>
+          <Num label="바닥 z (mm)" value={scene.floor?.z ?? rigidZRange(scene).z0} onChange={(v) => {
+            const next: Scene = { ...scene, floor: { enabled: scene.floor?.enabled ?? false, z: v } };
+            if (next.floor!.enabled) next.measure = { ...next.measure, angleMax: Math.min(next.measure.angleMax ?? 180, maxAngleAboveFloor(next)) };
+            p.onChange(next);
+          }} />
+        </div>
+        <p className="muted small">바닥을 켜면 그 아래는 도메인 전체 폭에서 고체가 되고(책상·바닥 반사), 측정 원호는 바닥 위까지만 잡힙니다. 요소를 클릭하면 속성이 여기에 나타납니다. 빈 곳 드래그로 이동, 휠로 확대. 회색 띠는 흡수층입니다.</p>
       </>
     );
   }
@@ -289,8 +330,13 @@ export function ShapePanel(p: Props) {
         {toolBtn('ellipse', '원', '드래그로 타원 추가 (E), Shift = 원')}
         <button onClick={() => addDriver('piston')} disabled={!p.editable} title="피스톤 드라이버 추가">+피스톤</button>
         <button onClick={() => addDriver('radial')} disabled={!p.editable} title="방사형 드라이버 추가">+방사</button>
-        <button onClick={() => { p.onChange({ ...scene, shapes: [...scene.shapes, defaultSlot(scene)] }); p.onSelect({ kind: 'shape', index: scene.shapes.length }); }} disabled={!p.editable} title="바깥 벽에 환형 슬롯 추가 (시작 z, 길이로 조절)">+슬롯</button>
-        <button onClick={() => { p.onChange({ ...scene, shapes: [...scene.shapes, defaultFabric(scene)] }); p.onSelect({ kind: 'shape', index: scene.shapes.length }); }} disabled={!p.editable} title="바깥 표면에 패브릭 층 추가 (시작 z, 높이, 두께로 조절)">+패브릭</button>
+        <select value={bandWhere} onChange={(e) => setBandWhere(e.target.value as BandPlace)} title="슬롯/패브릭을 붙일 면">
+          <option value="side">옆면</option>
+          <option value="top">윗면</option>
+          <option value="bottom">아랫면</option>
+        </select>
+        <button onClick={() => { p.onChange({ ...scene, shapes: [...scene.shapes, defaultSlot(scene, bandWhere)] }); p.onSelect({ kind: 'shape', index: scene.shapes.length }); }} disabled={!p.editable} title="선택한 면을 관통하는 슬롯 추가 (시작 위치, 길이로 조절)">+슬롯</button>
+        <button onClick={() => { p.onChange({ ...scene, shapes: [...scene.shapes, defaultFabric(scene, bandWhere)] }); p.onSelect({ kind: 'shape', index: scene.shapes.length }); }} disabled={!p.editable} title="선택한 면에 패브릭 층 추가 (시작 위치, 길이, 두께로 조절)">+패브릭</button>
         <button onClick={addDriverBody} disabled={!p.editable || scene.drivers.length === 0} title="선택한(또는 첫) 드라이버 뒤에 바스켓·마그넷 몸체를 추가. 이후 자유롭게 편집">+드라이버 몸체</button>
       </div>
       <div className="toolbar">

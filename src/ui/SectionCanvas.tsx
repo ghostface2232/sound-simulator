@@ -61,7 +61,7 @@ type Drag =
   | { kind: 'anchor'; index: number; node: number; orig: PathNode; start: Pt }
   | { kind: 'handle'; index: number; node: number; which: 'in' | 'out' }
   | { kind: 'shape'; index: number; orig: PathNode[]; start: Pt }
-  | { kind: 'bandEdge'; index: number; edge: 'top' | 'bottom'; band: Band }
+  | { kind: 'bandEdge'; index: number; edge: 'start' | 'end'; band: Band }
   | { kind: 'bandMove'; index: number; band: Band; start: Pt }
   | { kind: 'driverEnd'; index: number; end: 0 | 1 }
   | { kind: 'driver'; index: number; orig: Driver; start: Pt }
@@ -266,9 +266,11 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const idx = p.selection.index;
       const band = bandOf(scene.shapes[idx]);
       if (band) {
-        const rc = (band.r0 + band.r1) / 2;
-        if (near([rc, band.z1], cursor)) return { sel: { kind: 'shape', index: idx }, drag: { kind: 'bandEdge', index: idx, edge: 'top', band } };
-        if (near([rc, band.z0], cursor)) return { sel: { kind: 'shape', index: idx }, drag: { kind: 'bandEdge', index: idx, edge: 'bottom', band } };
+        const rc = (band.r0 + band.r1) / 2, zc = (band.z0 + band.z1) / 2;
+        const endPt: Pt = band.axis === 'z' ? [rc, band.z1] : [band.r1, zc];
+        const startPt: Pt = band.axis === 'z' ? [rc, band.z0] : [band.r0, zc];
+        if (near(endPt, cursor)) return { sel: { kind: 'shape', index: idx }, drag: { kind: 'bandEdge', index: idx, edge: 'end', band } };
+        if (near(startPt, cursor)) return { sel: { kind: 'shape', index: idx }, drag: { kind: 'bandEdge', index: idx, edge: 'start', band } };
       }
       const nodes = nodesOf(idx);
       const vi = p.selection.vertex;
@@ -393,15 +395,25 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         break;
       }
       case 'bandEdge': {
-        const z = snapV(zm);
         const b = { ...d.band };
-        if (d.edge === 'top') b.z1 = Math.max(b.z0 + p.snap, z); else b.z0 = Math.min(b.z1 - p.snap, z);
+        if (b.axis === 'z') {
+          const z = snapV(zm);
+          if (d.edge === 'end') b.z1 = Math.max(b.z0 + p.snap, z); else b.z0 = Math.min(b.z1 - p.snap, z);
+        } else {
+          const r = snapR(xm);
+          if (d.edge === 'end') b.r1 = Math.max(b.r0 + p.snap, r); else b.r0 = Math.min(b.r1 - p.snap, r);
+        }
         writeNodes(d.index, bandNodes(b), false);
         break;
       }
       case 'bandMove': {
-        const dz = snapV(zm - d.start[1]);
-        writeNodes(d.index, bandNodes({ ...d.band, z0: d.band.z0 + dz, z1: d.band.z1 + dz }), false);
+        if (d.band.axis === 'z') {
+          const dz = snapV(zm - d.start[1]);
+          writeNodes(d.index, bandNodes({ ...d.band, z0: d.band.z0 + dz, z1: d.band.z1 + dz }), false);
+        } else {
+          const dr = Math.max(-d.band.r0, snapV(Math.abs(xm) - d.start[0]));
+          writeNodes(d.index, bandNodes({ ...d.band, r0: d.band.r0 + dr, r1: d.band.r1 + dr }), false);
+        }
         break;
       }
       case 'driverEnd': {
@@ -580,6 +592,22 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     ctx.beginPath(); ctx.moveTo(P(0, dom.zMin)[0], dy0); ctx.lineTo(P(0, dom.zMin)[0], dy1); ctx.stroke();
     ctx.setLineDash([]);
 
+    // Ground plane.
+    if (scene.floor?.enabled) {
+      const [, fy] = P(0, scene.floor.z);
+      const yBottom = Math.min(dy1, size.h + 10), yTop = Math.max(fy, dy0);
+      ctx.fillStyle = 'rgba(70,60,50,0.18)';
+      ctx.fillRect(dx0, yTop, dx1 - dx0, Math.max(0, yBottom - yTop));
+      ctx.save(); ctx.beginPath(); ctx.rect(dx0, yTop, dx1 - dx0, Math.max(0, yBottom - yTop)); ctx.clip();
+      ctx.strokeStyle = 'rgba(70,60,50,0.35)'; ctx.lineWidth = 1;
+      for (let x = dx0 - 40; x < dx1 + 40; x += 14) { ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x - 30, yTop + 30); ctx.stroke(); }
+      ctx.restore();
+      ctx.strokeStyle = '#4a4036'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(dx0, fy); ctx.lineTo(dx1, fy); ctx.stroke();
+      ctx.fillStyle = '#4a4036'; ctx.font = '11px system-ui';
+      ctx.fillText(`바닥 z = ${scene.floor.z}`, dx0 + 6, fy - 5);
+    }
+
     // Path drawing helper: true Bézier segments, optionally mirrored.
     const pathNodes = (g: CanvasRenderingContext2D, nodes: PathNode[], mirror: boolean) => {
       const m = mirror ? -1 : 1;
@@ -745,18 +773,26 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const nodes = shapeNodes[sel.index];
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2;
       for (const mirror of [false, true]) { pathNodes(ctx, nodes, mirror); ctx.stroke(); }
-      // Two bar handles: start (bottom) and end (top) of the band.
-      const rc = (selBand.r0 + selBand.r1) / 2, halfW = Math.max((selBand.r1 - selBand.r0) / 2, 2);
-      for (const zz of [selBand.z0, selBand.z1]) {
-        for (const m of [1, -1]) {
+      // Two bar handles at the start and end of the band (across its width).
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5;
+      if (selBand.axis === 'z') {
+        const rc = (selBand.r0 + selBand.r1) / 2, halfW = Math.max((selBand.r1 - selBand.r0) / 2, 2);
+        for (const zz of [selBand.z0, selBand.z1]) for (const m of [1, -1]) {
           const [x0, y] = P(m * (rc - halfW), zz), [x1] = P(m * (rc + halfW), zz);
-          ctx.beginPath(); ctx.rect(Math.min(x0, x1) - 3, y - 3, Math.abs(x1 - x0) + 6, 6);
-          ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
+          ctx.beginPath(); ctx.rect(Math.min(x0, x1) - 3, y - 3, Math.abs(x1 - x0) + 6, 6); ctx.fill(); ctx.stroke();
+        }
+      } else {
+        const zc = (selBand.z0 + selBand.z1) / 2, halfH = Math.max((selBand.z1 - selBand.z0) / 2, 2);
+        for (const rr of [selBand.r0, selBand.r1]) for (const m of [1, -1]) {
+          const [x, y0] = P(m * rr, zc + halfH), [, y1] = P(m * rr, zc - halfH);
+          ctx.beginPath(); ctx.rect(x - 3, Math.min(y0, y1) - 3, 6, Math.abs(y1 - y0) + 6); ctx.fill(); ctx.stroke();
         }
       }
-      const [lx, ly] = P(selBand.r1 + 3, (selBand.z0 + selBand.z1) / 2);
+      const [lx, ly] = P(selBand.r1 + 3, selBand.axis === 'z' ? (selBand.z0 + selBand.z1) / 2 : selBand.z1 + 2);
       ctx.fillStyle = SELECT_COLOR; ctx.font = '11px system-ui';
-      ctx.fillText(`z ${selBand.z0} → ${selBand.z1}  (${(selBand.z1 - selBand.z0).toFixed(1)} mm)`, lx, ly + 4);
+      ctx.fillText(selBand.axis === 'z'
+        ? `z ${selBand.z0} → ${selBand.z1}  (${(selBand.z1 - selBand.z0).toFixed(1)} mm)`
+        : `r ${selBand.r0} → ${selBand.r1}  (${(selBand.r1 - selBand.r0).toFixed(1)} mm)`, lx, ly + 4);
     } else if (sel?.kind === 'shape' && scene.shapes[sel.index]) {
       const nodes = shapeNodes[sel.index];
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2;

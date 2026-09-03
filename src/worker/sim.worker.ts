@@ -11,6 +11,7 @@ export type WorkerIn =
   | { type: 'run'; scene: Scene; params: SimParams; frameEvery: number }
   | { type: 'parity'; scene: Scene; params: SimParams }
   | { type: 'optimize'; modelId: string; baseScene?: Scene; variables: DesignVariable[]; settings: OptimizeSettings; backend: SimParams['backend'] }
+  | { type: 'evaluate'; items: { id: string; scene: Scene }[]; params: SimParams }
   | { type: 'stop' };
 
 export type WorkerOut =
@@ -21,8 +22,13 @@ export type WorkerOut =
   | { type: 'opt-eval'; candidate: Candidate }
   | { type: 'opt-progress'; progress: OptimizeProgress }
   | { type: 'opt-done'; ranked: Candidate[]; elapsedMs: number }
+  | { type: 'eval-start'; id: string }
+  | { type: 'eval-result'; id: string; result: SimResultDTO | null; warnings: Diagnostic[]; error?: string; elapsedMs: number }
+  | { type: 'eval-done' }
   | { type: 'stopped' }
   | { type: 'error'; message: string };
+
+export interface SimResultDTO { freqs: Float32Array; angles: Float32Array; db: Float32Array; dt: number; nSteps: number; fMinReliable: number }
 
 let stopRequested = false;
 
@@ -83,6 +89,36 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
     } catch (err) {
       post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
     }
+    return;
+  }
+
+  if (msg.type === 'evaluate') {
+    stopRequested = false;
+    for (const item of msg.items) {
+      if (stopRequested) { post({ type: 'stopped' }); return; }
+      const t0 = performance.now();
+      post({ type: 'eval-start', id: item.id });
+      try {
+        const out = await runSimulation(item.scene, msg.params, {
+          onGrid: (g) => post({
+            type: 'grid', Nr: g.Nr, Nz: g.Nz, dx: g.dx, zMin: g.zMin,
+            solid: g.solid.slice(), sigma: g.sigma.slice(), probes: g.probes,
+          }),
+          onFrame: async (p, step, nSteps) => {
+            const copy = p.slice();
+            post({ type: 'frame', step, nSteps, p: copy }, [copy.buffer]);
+            await yieldToQueue();
+          },
+          shouldStop: () => stopRequested,
+        }, 100);
+        if (!out) { post({ type: 'stopped' }); return; }
+        const { result, warnings } = out;
+        post({ type: 'eval-result', id: item.id, result: { freqs: result.freqs, angles: result.angles, db: result.db, dt: result.dt, nSteps: result.nSteps, fMinReliable: result.fMinReliable }, warnings, elapsedMs: performance.now() - t0 });
+      } catch (err) {
+        post({ type: 'eval-result', id: item.id, result: null, warnings: [], error: err instanceof Error ? err.message : String(err), elapsedMs: performance.now() - t0 });
+      }
+    }
+    post({ type: 'eval-done' });
     return;
   }
 

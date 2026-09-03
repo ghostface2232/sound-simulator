@@ -44,7 +44,7 @@ export function sceneToSvg(scene: Scene): string {
     const fill = ROLE_FILL[role];
     const opacity = s.material === 'air' ? 0.35 : 1;
     const id = (s.label ?? `shape-${i + 1}`).replace(/[^\w-]+/g, '_');
-    return `  <path id="${id}" data-role="${role}" data-material="${s.material}"${s.sigma !== undefined ? ` data-sigma="${s.sigma}"` : ''} fill="${fill}" fill-opacity="${opacity}" stroke="none" d="${nodesToD(p.nodes)}"/>`;
+    return `  <path id="${id}" data-role="${role}" data-material="${s.material}"${s.sigma !== undefined ? ` data-sigma="${s.sigma}"` : ''}${p.axis ? ` data-axis="${p.axis}"` : ''} fill="${fill}" fill-opacity="${opacity}" stroke="none" d="${nodesToD(p.nodes)}"/>`;
   });
   const drivers = scene.drivers.map((dr, i) => {
     const a = dr.kind === 'piston' ? [Math.min(...dr.r), dr.z] : [dr.r, Math.min(...dr.z)];
@@ -189,7 +189,8 @@ export function svgToShapes(svgText: string): PathShape[] {
     const role = (el.getAttribute('data-role') as ShapeRole | null) ?? roleFromFill(el.getAttribute('fill')) ?? 'housing';
     const material = materialForRole(role);
     const sigmaAttr = el.getAttribute('data-sigma');
-    const meta = { material, role, ...(sigmaAttr ? { sigma: Number(sigmaAttr) } : {}), ...(id ? { label: id } : {}) };
+    const axisAttr = el.getAttribute('data-axis');
+    const meta = { material, role, ...(sigmaAttr ? { sigma: Number(sigmaAttr) } : {}), ...(id ? { label: id } : {}), ...(axisAttr === 'r' || axisAttr === 'z' ? { axis: axisAttr as 'r' | 'z' } : {}) };
     if (tag === 'path') {
       for (const nodes of parsePathD(el.getAttribute('d') ?? '', mm)) out.push({ kind: 'path', nodes, ...meta });
     } else if (tag === 'rect') {

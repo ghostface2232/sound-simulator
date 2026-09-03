@@ -46,6 +46,8 @@ export interface PathShape {
   role?: ShapeRole;
   sigma?: number;
   label?: string;
+  /** For slot/fabric bands: 'z' runs along the side wall (default), 'r' along a top/bottom plate. */
+  axis?: 'z' | 'r';
 }
 
 export type Shape = RectShape | PolygonShape | PathShape;
@@ -81,6 +83,8 @@ export interface Scene {
   measure: { radius: number; zCenter: number; angleStep: number; angleMax?: number };
   shapes: Shape[];
   drivers: Driver[];
+  /** Infinite rigid ground plane: everything at z <= floor.z is solid across the whole domain. */
+  floor?: { enabled: boolean; z: number };
 }
 
 export interface SimParams {

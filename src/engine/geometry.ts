@@ -221,7 +221,11 @@ export function shapeToPolygon(s: Shape): Pt[] {
 
 /** Editor form of any shape: a closed Bézier path (straight segments where the source had none). */
 export function shapeToPath(s: Shape): PathShape {
-  const base = { material: s.material, role: s.role ?? defaultRole(s.material), ...(s.sigma !== undefined ? { sigma: s.sigma } : {}), ...(s.label !== undefined ? { label: s.label } : {}) };
+  const base = {
+    material: s.material, role: s.role ?? defaultRole(s.material),
+    ...(s.sigma !== undefined ? { sigma: s.sigma } : {}), ...(s.label !== undefined ? { label: s.label } : {}),
+    ...(s.kind === 'path' && s.axis ? { axis: s.axis } : {}),
+  };
   if (s.kind === 'path') return { ...base, kind: 'path', nodes: s.nodes.map((n) => ({ p: [n.p[0], n.p[1]] as Pt, ...(n.hIn ? { hIn: [n.hIn[0], n.hIn[1]] as Pt } : {}), ...(n.hOut ? { hOut: [n.hOut[0], n.hOut[1]] as Pt } : {}) })) };
   return { ...base, kind: 'path', nodes: polygonToPath(shapeToPolygon(s)) };
 }
@@ -265,16 +269,29 @@ export function driverBodyShape(d: Driver, depth = 16): PathShape {
   return { kind: 'path', nodes: pts.map((p) => ({ p })), material: 'rigid', role: 'driver', label: `${d.label ?? 'driver'} body` };
 }
 
-export interface Band { r0: number; r1: number; z0: number; z1: number }
+export interface Band { r0: number; r1: number; z0: number; z1: number; axis: 'z' | 'r' }
 
-/** Slots and fabric are edited as bands (z start + length, radial extent) when they are axis-aligned rects. */
+/**
+ * Slots and fabric are edited as bands when they are axis-aligned rects.
+ * axis 'z': runs along the side wall (start z + length). axis 'r': runs along a top/bottom plate (start r + length).
+ */
 export function bandOf(s: Shape): Band | null {
   const role = s.role ?? defaultRole(s.material);
   if (role !== 'slot' && role !== 'fabric') return null;
-  return asAxisAlignedRect(shapeToPolygon(s));
+  const rect = asAxisAlignedRect(shapeToPolygon(s));
+  return rect ? { ...rect, axis: (s.kind === 'path' && s.axis) || 'z' } : null;
 }
 
-export function bandNodes(b: Band): PathNode[] {
+export type BandPlace = 'side' | 'top' | 'bottom';
+
+/** z extent of the rigid parts. */
+export function rigidZRange(scene: Scene): { z0: number; z1: number } {
+  let z0 = Infinity, z1 = -Infinity;
+  for (const s of scene.shapes) if (s.material === 'rigid') for (const [, z] of shapeToPolygon(s)) { z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+  return Number.isFinite(z0) ? { z0, z1 } : { z0: 0, z1: 50 };
+}
+
+export function bandNodes(b: Omit<Band, 'axis'> & { axis?: 'z' | 'r' }): PathNode[] {
   const r0 = Math.max(0, Math.min(b.r0, b.r1)), r1 = Math.max(b.r0, b.r1), z0 = Math.min(b.z0, b.z1), z1 = Math.max(b.z0, b.z1);
   return [{ p: [r0, z0] }, { p: [r1, z0] }, { p: [r1, z1] }, { p: [r0, z1] }];
 }
@@ -286,16 +303,28 @@ export function outerRadius(scene: Scene): number {
   return r;
 }
 
-/** Default side slot cutting the outer wall (2 mm past both faces, wall assumed <= 4 mm). */
-export function defaultSlot(scene: Scene, z0 = 3, length = 10): PathShape {
+/** Default slot cutting the outer wall (side) or a top/bottom plate: 2 mm past both faces, plate assumed <= 4 mm. */
+export function defaultSlot(scene: Scene, where: BandPlace = 'side', start?: number, length = 10): PathShape {
   const R = outerRadius(scene) || 35;
-  return { kind: 'path', nodes: bandNodes({ r0: R - 6, r1: R + 2, z0, z1: z0 + length }), material: 'air', role: 'slot', label: `slot ${scene.shapes.filter((s) => s.role === 'slot').length + 1}` };
+  const { z0: zb, z1: zt } = rigidZRange(scene);
+  const n = scene.shapes.filter((s) => s.role === 'slot').length + 1;
+  let b: Band;
+  if (where === 'side') b = { r0: R - 6, r1: R + 2, z0: start ?? 3, z1: (start ?? 3) + length, axis: 'z' };
+  else if (where === 'top') b = { r0: start ?? 10, r1: (start ?? 10) + length, z0: zt - 6, z1: zt + 2, axis: 'r' };
+  else b = { r0: start ?? 10, r1: (start ?? 10) + length, z0: zb - 2, z1: zb + 6, axis: 'r' };
+  return { kind: 'path', nodes: bandNodes(b), material: 'air', role: 'slot', axis: b.axis, label: `slot ${n}` };
 }
 
-/** Default fabric layer on the outer surface. */
-export function defaultFabric(scene: Scene, z0 = 2, height = 12, thickness = 1): PathShape {
+/** Default fabric layer on the outer side surface or on a top/bottom face. */
+export function defaultFabric(scene: Scene, where: BandPlace = 'side', start?: number, length = 12, thickness = 1): PathShape {
   const R = outerRadius(scene) || 35;
-  return { kind: 'path', nodes: bandNodes({ r0: R, r1: R + thickness, z0, z1: z0 + height }), material: 'fabric', role: 'fabric', sigma: 2e5, label: `fabric ${scene.shapes.filter((s) => s.role === 'fabric').length + 1}` };
+  const { z0: zb, z1: zt } = rigidZRange(scene);
+  const n = scene.shapes.filter((s) => s.role === 'fabric').length + 1;
+  let b: Band;
+  if (where === 'side') b = { r0: R, r1: R + thickness, z0: start ?? 2, z1: (start ?? 2) + length, axis: 'z' };
+  else if (where === 'top') b = { r0: start ?? 9, r1: (start ?? 9) + length, z0: zt, z1: zt + thickness, axis: 'r' };
+  else b = { r0: start ?? 9, r1: (start ?? 9) + length, z0: zb - thickness, z1: zb, axis: 'r' };
+  return { kind: 'path', nodes: bandNodes(b), material: 'fabric', role: 'fabric', axis: b.axis, sigma: 2e5, label: `fabric ${n}` };
 }
 
 export function materialForRole(role: ShapeRole, current?: Material): Material {
@@ -340,6 +369,17 @@ export function sceneBounds(scene: Scene) {
 
 const label = (s: { label?: string }, k: number, what: string) => (s.label ? `${s.label}` : `${what} ${k}`);
 
+/** Largest measurement angle (multiple of angleStep) whose probe stays >= 1 mm above the floor. */
+export function maxAngleAboveFloor(scene: Scene): number {
+  if (!scene.floor?.enabled) return 180;
+  const { radius, zCenter, angleStep } = scene.measure;
+  const c = (scene.floor.z + 1 - zCenter) / radius;
+  if (c >= 1) return angleStep;
+  if (c <= -1) return 180;
+  const th = (Math.acos(c) * 180) / Math.PI;
+  return Math.max(angleStep, Math.floor(th / angleStep) * angleStep);
+}
+
 /**
  * Geometric conflicts: things that are structurally valid JSON but make no
  * physical sense on the grid. Each diagnostic carries the element and, where
@@ -379,6 +419,24 @@ export function checkGeometry(scene: Scene): Diagnostic[] {
       }
     }
   });
+
+  if (scene.floor?.enabled) {
+    const fz = scene.floor.z;
+    scene.drivers.forEach((d, k) => {
+      const { a, b, dir } = driverSegment(d);
+      const front = Math.min(a[1], b[1]) + dir[1];
+      if (front <= fz) out.push({ severity: 'error', code: 'driver-below-floor', message: `${label(d, k, '드라이버')}: 진동판이 바닥(z = ${fz}) 아래에 있습니다.`, target: { kind: 'driver', index: k }, point: [a[0], a[1]] });
+    });
+    const { radius, zCenter, angleStep, angleMax = 180 } = scene.measure;
+    for (let ang = 0; ang <= angleMax + 1e-9; ang += angleStep) {
+      const th = (ang * Math.PI) / 180;
+      const z = zCenter + radius * Math.cos(th);
+      if (z <= fz) {
+        out.push({ severity: 'error', code: 'probe-below-floor', message: `측정 원호가 바닥(z = ${fz}) 아래로 내려갑니다 (θ = ${ang}°). 최대 각도를 ${maxAngleAboveFloor(scene)}° 이하로 줄이세요.`, target: { kind: 'measure', index: 0 }, point: [radius * Math.sin(th), z] });
+        break;
+      }
+    }
+  }
 
   {
     const { radius, zCenter, angleStep, angleMax = 180 } = scene.measure;

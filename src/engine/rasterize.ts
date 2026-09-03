@@ -80,6 +80,12 @@ export function buildGrid(scene: Scene, dx: number): BuiltGrid {
 
   for (const s of scene.shapes) rasterShape(s, Nr, Nz, dx, zMin, solid, sigma);
 
+  // Ground plane: solid rows across the full radius (conservative: any cell overlapping z <= floor).
+  if (scene.floor?.enabled) {
+    const jTop = Math.min(Nz - 1, Math.floor((scene.floor.z - zMin) / dx + 0.5 - 1e-9));
+    for (let j = 0; j <= jTop; j++) for (let i = 0; i < Nr; i++) { solid[j * Nr + i] = 1; sigma[j * Nr + i] = 0; }
+  }
+
   const srcFace: number[] = [];
   const srcIsZ: number[] = [];
   const srcSign: number[] = [];

@@ -101,8 +101,9 @@ export function makeSceneModel(base: Scene, range = 8): ParametricModel {
         }
       });
     } else if (p.role === 'slot') {
-      variables.push({ key: `s${si}dz`, label: `${name} 높이 이동`, unit: 'mm', min: -range, max: range, value: 0, enabled: true });
-      variables.push({ key: `s${si}dh`, label: `${name} 높이 배율`, min: 0.5, max: 2, value: 1, enabled: false });
+      const radial = p.axis === 'r';
+      variables.push({ key: `s${si}dz`, label: `${name} ${radial ? '반경' : '높이'} 이동`, unit: 'mm', min: -range, max: range, value: 0, enabled: true });
+      variables.push({ key: `s${si}dh`, label: `${name} ${radial ? '길이' : '높이'} 배율`, min: 0.5, max: 2, value: 1, enabled: false });
     }
   });
   scene.drivers.forEach((d, di) => {
@@ -128,10 +129,16 @@ export function makeSceneModel(base: Scene, range = 8): ParametricModel {
             return shiftNode(n, dr, dz);
           });
         } else if (p.role === 'slot') {
-          const dz = params[`s${si}dz`] ?? 0;
+          const d = params[`s${si}dz`] ?? 0;
           const dh = params[`s${si}dh`] ?? 1;
-          const z0 = Math.min(...p.nodes.map((n) => n.p[1]));
-          p.nodes = p.nodes.map((n) => scaleNodeZ(shiftNode(n, 0, dz), z0 + dz, dh));
+          if (p.axis === 'r') {
+            const r0 = Math.min(...p.nodes.map((n) => n.p[0]));
+            const dr = Math.max(-r0, d);
+            p.nodes = p.nodes.map((n) => scaleNodeR(shiftNode(n, dr, 0), r0 + dr, dh));
+          } else {
+            const z0 = Math.min(...p.nodes.map((n) => n.p[1]));
+            p.nodes = p.nodes.map((n) => scaleNodeZ(shiftNode(n, 0, d), z0 + d, dh));
+          }
         }
         return p;
       });
@@ -148,6 +155,11 @@ export function makeSceneModel(base: Scene, range = 8): ParametricModel {
 function shiftNode(n: PathNode, dr: number, dz: number): PathNode {
   const mv = (q: [number, number]): [number, number] => [Math.max(0, q[0] + dr), q[1] + dz];
   return { p: mv(n.p), ...(n.hIn ? { hIn: mv(n.hIn) } : {}), ...(n.hOut ? { hOut: mv(n.hOut) } : {}) };
+}
+
+function scaleNodeR(n: PathNode, r0: number, k: number): PathNode {
+  const sc = (q: [number, number]): [number, number] => [Math.max(0, r0 + (q[0] - r0) * k), q[1]];
+  return { p: sc(n.p), ...(n.hIn ? { hIn: sc(n.hIn) } : {}), ...(n.hOut ? { hOut: sc(n.hOut) } : {}) };
 }
 
 function scaleNodeZ(n: PathNode, z0: number, k: number): PathNode {

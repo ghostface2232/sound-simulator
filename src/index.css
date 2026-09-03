@@ -100,3 +100,10 @@ details summary { cursor: pointer; color: #444; }
 .props .dot { display: inline-block; width: 10px; height: 10px; border: 1.5px solid; border-radius: 2px; }
 .props input[type='text'], .props input:not([type]) { font: inherit; padding: 5px 7px; border: 1px solid #cfd3da; border-radius: 4px; background: #fafbfc; }
 details textarea { width: 100%; min-height: 160px; margin-top: 6px; }
+
+/* --- variants --- */
+table.variants input.name { width: 90px; padding: 2px 4px; font: inherit; border: 1px solid transparent; border-radius: 3px; background: transparent; }
+table.variants input.name:hover, table.variants input.name:focus { border-color: #cfd3da; background: #fff; }
+table.variants td.actions { white-space: nowrap; }
+table.variants td.actions button { margin-right: 2px; }
+.badge { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 8px; background: #2f6fe4; color: #fff; font-size: 10px; }

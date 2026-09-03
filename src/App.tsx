@@ -16,9 +16,22 @@ import { ShapePanel } from './ui/ShapePanel';
 import { PolarChart, type PolarSeries } from './ui/PolarChart';
 import { ResponseChart, SERIES_COLORS, type ResponseSeries } from './ui/ResponseChart';
 import { OptimizePanel } from './ui/OptimizePanel';
+import { VariantPanel, type Variant } from './ui/VariantPanel';
+import { scoreResult, type ObjectiveSettings } from './engine/optimize';
 
 type Status = 'idle' | 'running' | 'done' | 'error';
-type Mode = 'sim' | 'opt';
+type Mode = 'sim' | 'opt' | 'cmp';
+
+const VARIANTS_KEY = 'speaker-sim.variants.v1';
+
+function loadVariants(): Variant[] {
+  try {
+    const raw = localStorage.getItem(VARIANTS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as { id: string; name: string; scene: Scene }[];
+    return arr.map((v) => ({ id: v.id, name: v.name, scene: normalizeScene(v.scene) }));
+  } catch { return []; }
+}
 
 function DiagnosticList({ items }: { items: Diagnostic[] }) {
   if (items.length === 0) return null;
@@ -74,6 +87,14 @@ export default function App() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   /** Geometry shown on the canvas while optimising: the candidate being evaluated, then the best one. */
   const [optScene, setOptScene] = useState<Scene | null>(null);
+
+  // Saved variants for side-by-side comparison.
+  const [variants, setVariants] = useState<Variant[]>(loadVariants);
+  const [cmpRunning, setCmpRunning] = useState(false);
+  const [cmpRunningId, setCmpRunningId] = useState<string | null>(null);
+  const [cmpSelected, setCmpSelected] = useState<Set<string>>(new Set());
+  const [cmpScene, setCmpScene] = useState<Scene | null>(null);
+  const variantsRef = useRef(variants); variantsRef.current = variants;
 
   const workerRef = useRef<Worker | null>(null);
   const modelRef = useRef(model); modelRef.current = model;
@@ -170,11 +191,31 @@ export default function App() {
           if (m.ranked[0]) setOptScene(normalizeScene(modelRef.current.build(m.ranked[0].params)));
           setSelected(new Set(m.ranked.filter((c, i) => i === 0 || c.origin === 'baseline').map((c) => c.id)));
           break;
+        case 'eval-start': {
+          setCmpRunningId(m.id);
+          const v = variantsRef.current.find((x) => x.id === m.id);
+          if (v) setCmpScene(v.scene);
+          break;
+        }
+        case 'eval-result': {
+          const objective = objectiveRef.current;
+          setVariants((prev) => prev.map((v) => v.id !== m.id ? v : {
+            ...v,
+            result: m.result ? { ...m.result } : undefined,
+            breakdown: m.result ? scoreResult({ ...m.result }, objective) : undefined,
+            warnings: m.warnings, error: m.error, elapsedMs: m.elapsedMs, evaluatedWith: paramsSigRef.current,
+          }));
+          if (m.result) setCmpSelected((prev) => new Set([...prev, m.id]));
+          break;
+        }
+        case 'eval-done':
+          setCmpRunning(false); setCmpRunningId(null);
+          break;
         case 'stopped':
-          setStatus('idle'); setMessage('중단됨'); setOptRunning(false);
+          setStatus('idle'); setMessage('중단됨'); setOptRunning(false); setCmpRunning(false); setCmpRunningId(null);
           break;
         case 'error':
-          setStatus('error'); setMessage(m.message); setParityBusy(false); setOptRunning(false);
+          setStatus('error'); setMessage(m.message); setParityBusy(false); setOptRunning(false); setCmpRunning(false);
           break;
       }
     };
@@ -184,7 +225,42 @@ export default function App() {
 
   const diagnostics = useMemo<Diagnostic[]>(() => diagnose(scene, params), [scene, params]);
   const blocked = hasErrors(diagnostics);
-  const busy = status === 'running' || optRunning || parityBusy;
+  const busy = status === 'running' || optRunning || parityBusy || cmpRunning;
+
+  // Signature of the simulation settings a variant result was computed with.
+  const paramsSig = useMemo(() => JSON.stringify({ dx: params.dx, t: params.durationMs, f0: params.fMin, f1: params.fMax, sp: params.spongeCells }), [params]);
+  const paramsSigRef = useRef(paramsSig); paramsSigRef.current = paramsSig;
+  const objectiveRef = useRef(optSettings.objective); objectiveRef.current = optSettings.objective;
+
+  // Persist variants (scenes only) and re-score them when the objective changes.
+  useEffect(() => {
+    try { localStorage.setItem(VARIANTS_KEY, JSON.stringify(variants.map((v) => ({ id: v.id, name: v.name, scene: v.scene })))); } catch { /* storage unavailable */ }
+  }, [variants]);
+  useEffect(() => {
+    setVariants((prev) => prev.map((v) => (v.result ? { ...v, breakdown: scoreResult(v.result, optSettings.objective) } : v)));
+  }, [optSettings.objective]);
+
+  const saveVariant = useCallback(() => {
+    const id = `v${Date.now().toString(36)}`;
+    setVariants((prev) => [...prev, { id, name: `안 ${prev.length + 1}`, scene }]);
+    setCmpScene(scene);
+  }, [scene]);
+  const evaluateVariants = useCallback((ids?: string[]) => {
+    if (!workerRef.current) return;
+    const items = variantsRef.current.filter((v) => !ids || ids.includes(v.id)).map((v) => ({ id: v.id, scene: v.scene }));
+    if (items.length === 0) return;
+    setCmpRunning(true); setMessage(''); setResult(null); setFrame(null); setGrid(null);
+    workerRef.current.postMessage({ type: 'evaluate', items, params } satisfies WorkerIn);
+  }, [params]);
+  const loadVariant = useCallback((v: Variant) => { resetScene(normalizeScene(v.scene)); setOptBase(v.scene); setMode('sim'); setTimeout(() => canvasRef.current?.fitDevice(), 0); }, [resetScene]);
+  const updateVariantFromEditor = useCallback((v: Variant) => {
+    setVariants((prev) => prev.map((x) => x.id === v.id ? { id: x.id, name: x.name, scene } : x));
+    setCmpScene(scene);
+  }, [scene]);
+  const renameVariant = useCallback((v: Variant, name: string) => setVariants((prev) => prev.map((x) => x.id === v.id ? { ...x, name } : x)), []);
+  const deleteVariant = useCallback((v: Variant) => { setVariants((prev) => prev.filter((x) => x.id !== v.id)); setCmpSelected((prev) => { const n = new Set(prev); n.delete(v.id); return n; }); }, []);
+  const toggleCmp = useCallback((id: string) => setCmpSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
+  const setObjective = useCallback((o: ObjectiveSettings) => setOptSettings((s) => ({ ...s, objective: o })), []);
 
   // "What the solver sees": rasterised mask at the current dx (only when requested).
   const gridMask = useMemo<GridInfo | null>(() => {
@@ -287,17 +363,29 @@ export default function App() {
     const i = compared.findIndex((c) => c.id === id);
     return i < 0 ? null : SERIES_COLORS[i % SERIES_COLORS.length];
   }, [compared]);
+  const comparedVariants = variants.filter((v) => cmpSelected.has(v.id) && v.result);
+  const colorForVariant = useCallback((id: string) => {
+    const i = comparedVariants.findIndex((v) => v.id === id);
+    return i < 0 ? null : SERIES_COLORS[i % SERIES_COLORS.length];
+  }, [comparedVariants]);
 
+  const sideAngle = optSettings.objective.sideAngle;
   const polarSeries: PolarSeries[] = mode === 'sim'
     ? (result ? [{ result, color: '#d33', label: '' }] : [])
-    : compared.map((c, i) => ({ result: c.result!, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `#${c.id} ${c.score.toFixed(2)}` }));
+    : mode === 'opt'
+      ? compared.map((c, i) => ({ result: c.result!, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `#${c.id} ${c.score.toFixed(2)}` }))
+      : comparedVariants.map((v, i) => ({ result: v.result!, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `${v.name} ${v.breakdown ? v.breakdown.score.toFixed(2) : ''}` }));
   const responseSeries: ResponseSeries[] = mode === 'sim'
     ? (result ? [0, 45, 90, 135, 180].map((a, i) => ({ result, angle: a, color: SERIES_COLORS[i], label: `${a}°` })) : [])
-    : compared.map((c, i) => ({ result: c.result!, angle: optSettings.objective.sideAngle, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `#${c.id}` }));
+    : mode === 'opt'
+      ? compared.map((c, i) => ({ result: c.result!, angle: sideAngle, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `#${c.id}` }))
+      : comparedVariants.map((v, i) => ({ result: v.result!, angle: sideAngle, color: SERIES_COLORS[i % SERIES_COLORS.length], label: v.name }));
 
   const cells = grid ? grid.Nr * grid.Nz : 0;
-  const chartFMin = mode === 'sim' ? (result ? result.freqs[0] : params.fMin) : (compared[0]?.result?.freqs[0] ?? optSettings.fMin);
-  const chartFMax = mode === 'sim' ? params.fMax : optSettings.fMax;
+  const chartFMin = mode === 'sim' ? (result ? result.freqs[0] : params.fMin)
+    : mode === 'opt' ? (compared[0]?.result?.freqs[0] ?? optSettings.fMin)
+      : (comparedVariants[0]?.result?.freqs[0] ?? params.fMin);
+  const chartFMax = mode === 'opt' ? optSettings.fMax : params.fMax;
   const h = historyRef.current;
 
   return (
@@ -307,6 +395,7 @@ export default function App() {
         <div className="modes">
           <button className={mode === 'sim' ? 'active' : ''} onClick={() => enterMode('sim')}>시뮬레이션</button>
           <button className={mode === 'opt' ? 'active' : ''} onClick={() => enterMode('opt')}>리플렉터 최적화</button>
+          <button className={mode === 'cmp' ? 'active' : ''} onClick={() => enterMode('cmp')}>형상 비교</button>
         </div>
 
         {mode === 'sim' ? (
@@ -378,6 +467,14 @@ export default function App() {
               </p>
             )}
           </>
+        ) : mode === 'cmp' ? (
+          <VariantPanel
+            variants={variants} objective={optSettings.objective} paramsSignature={paramsSig}
+            running={cmpRunning} runningId={cmpRunningId} selected={cmpSelected}
+            onSave={saveVariant} onEvaluate={evaluateVariants} onStop={stop}
+            onLoad={loadVariant} onUpdateFromEditor={updateVariantFromEditor} onRename={renameVariant} onDelete={deleteVariant}
+            onToggle={toggleCmp} onPreview={(v) => setCmpScene(v.scene)} colorFor={colorForVariant} setObjective={setObjective}
+          />
         ) : (
           <>
             <label>모델
@@ -406,7 +503,7 @@ export default function App() {
       <main className="center">
         <SectionCanvas
           ref={canvasRef}
-          scene={mode === 'opt' && optScene ? optScene : scene}
+          scene={mode === 'opt' && optScene ? optScene : mode === 'cmp' && cmpScene ? cmpScene : scene}
           onChange={updateScene}
           selection={selection} onSelect={setSelection}
           tool={tool} onToolDone={() => setTool('select')}
@@ -420,20 +517,20 @@ export default function App() {
       </main>
 
       <aside className="panel right">
-        <h2>지향성 <span className="sub">{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}{mode === 'opt' && ' · 공통 기준'}</span></h2>
+        <h2>지향성 <span className="sub">{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}{mode !== 'sim' && ' · 공통 기준'}</span></h2>
         <input type="range" min={Math.log10(chartFMin)} max={Math.log10(chartFMax)} step={0.01}
           value={Math.log10(Math.min(Math.max(polarFreq, chartFMin), chartFMax))}
           onChange={(e) => setPolarFreq(Math.round(10 ** +e.target.value / 50) * 50)} />
-        <div className="chart polar"><PolarChart series={polarSeries} freq={polarFreq} normalize={mode === 'opt' ? 'shared' : 'each'} /></div>
+        <div className="chart polar"><PolarChart series={polarSeries} freq={polarFreq} normalize={mode !== 'sim' ? 'shared' : 'each'} /></div>
 
-        <h2>주파수 응답 <span className="sub">dB, 상대값{mode === 'opt' && ` · ${optSettings.objective.sideAngle}° 방향`}</span></h2>
+        <h2>주파수 응답 <span className="sub">dB, 상대값{mode !== 'sim' && ` · ${sideAngle}° 방향`}</span></h2>
         <div className="chart response">
           <ResponseChart series={responseSeries} fMin={chartFMin} fMax={chartFMax} />
         </div>
         <p className="muted small">
           0° = +z(위), 90° = 측면, 180° = 아래. 절대 SPL은 드라이버 데이터가 있어야 하므로 지금은 상대 dB입니다.
           {mode === 'sim' && result && ` 표시 하한 ${Math.round(result.fMinReliable)} Hz는 해석 시간으로 결정됩니다.`}
-          {mode === 'opt' && ' 최적화 모드에서는 체크한 후보들을 같은 기준(전체 최대 = 0 dB)으로 겹쳐 그립니다.'}
+          {mode !== 'sim' && ' 비교 모드에서는 체크한 항목들을 같은 기준(전체 최대 = 0 dB)으로 겹쳐 그립니다.'}
         </p>
       </aside>
     </div>

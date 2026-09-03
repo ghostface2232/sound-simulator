@@ -141,17 +141,37 @@ async function main() {
     const { bandOf, bandNodes, defaultSlot, defaultFabric, outerRadius, checkGeometry: cg } = await import('../src/engine/geometry');
     const s = normalizeScene(sideRadialScene());
     const slot = s.shapes.find((x) => x.role === 'slot')!, fabric = s.shapes.find((x) => x.role === 'fabric')!, refl = s.shapes.find((x) => x.role === 'reflector')!;
-    assert.deepEqual(bandOf(slot), { r0: 31.5, r1: 37, z0: 3, z1: 13 });
-    assert.deepEqual(bandOf(fabric), { r0: 35, r1: 36, z0: 2, z1: 14 });
+    assert.deepEqual(bandOf(slot), { r0: 31.5, r1: 37, z0: 3, z1: 13, axis: 'z' });
+    assert.deepEqual(bandOf(fabric), { r0: 35, r1: 36, z0: 2, z1: 14, axis: 'z' });
     assert.equal(bandOf(refl), null, 'a triangle is not a band');
     assert.deepEqual(bandNodes({ r0: 5, r1: 2, z0: 9, z1: 4 }).map((n) => n.p), [[2, 4], [5, 4], [5, 9], [2, 9]]);
     assert.equal(outerRadius(s), 35);
     const s2 = { ...s, shapes: [...s.shapes.filter((x) => x.role !== 'slot' && x.role !== 'fabric'), defaultSlot(s), defaultFabric(s)] };
     const ns = defaultSlot(s), nf = defaultFabric(s);
-    assert.deepEqual(bandOf(ns), { r0: 29, r1: 37, z0: 3, z1: 13 });
-    assert.deepEqual(bandOf(nf), { r0: 35, r1: 36, z0: 2, z1: 14 });
+    assert.deepEqual(bandOf(ns), { r0: 29, r1: 37, z0: 3, z1: 13, axis: 'z' });
+    assert.deepEqual(bandOf(nf), { r0: 35, r1: 36, z0: 2, z1: 14, axis: 'z' });
     assert.deepEqual(cg(s2).filter((d) => d.severity === 'error'), []);
     assert.ok(!cg(s2).some((d) => d.code === 'slot-no-wall'), 'default slot cuts the wall');
+    // Top and bottom plates: radial bands cutting the plate thickness.
+    const top = defaultSlot(s, 'top'), bottom = defaultSlot(s, 'bottom'), topFab = defaultFabric(s, 'top');
+    assert.deepEqual(bandOf(top), { r0: 10, r1: 20, z0: 54, z1: 62, axis: 'r' });
+    assert.deepEqual(bandOf(bottom), { r0: 10, r1: 20, z0: -2, z1: 6, axis: 'r' });
+    assert.deepEqual(bandOf(topFab), { r0: 9, r1: 21, z0: 60, z1: 61, axis: 'r' });
+    const s3 = { ...s, shapes: [...s.shapes, top, bottom] };
+    assert.ok(!cg(s3).some((d) => d.code === 'slot-no-wall'), 'plate slots cut the plates');
+  });
+  await test('floor: rows at z <= floor are solid, probes below it are errors, max angle is computed', async () => {
+    const { maxAngleAboveFloor, checkGeometry: cg } = await import('../src/engine/geometry');
+    const s = normalizeScene(sideRadialScene());
+    s.floor = { enabled: true, z: 0 };
+    const g = buildGrid(s, 1);
+    const jFloor = Math.round((0 - s.domain.zMin) / 1);
+    assert.ok(g.solid[jFloor * g.Nr + Math.floor(g.Nr / 2)] === 1 && g.solid[(jFloor + 3) * g.Nr + Math.floor(g.Nr / 2)] === 0, 'solid below the floor, air above');
+    assert.ok(cg(s).some((d) => d.code === 'probe-below-floor'), 'arc dips below the floor');
+    const am = maxAngleAboveFloor(s);
+    assert.ok(am < 180 && am % s.measure.angleStep === 0, `max angle ${am}`);
+    s.measure.angleMax = am;
+    assert.ok(!cg(s).some((d) => d.code === 'probe-below-floor'));
   });
   await test('SVG export writes cubic paths that parse back to the same anchors and handles', () => {
     const s = normalizeScene(sideRadialScene());
