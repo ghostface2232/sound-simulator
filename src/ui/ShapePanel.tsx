@@ -340,8 +340,8 @@ export function ShapePanel(p: Props) {
         <button onClick={addDriverBody} disabled={!p.editable || scene.drivers.length === 0} title="선택한(또는 첫) 드라이버 뒤에 바스켓·마그넷 몸체를 추가. 이후 자유롭게 편집">+드라이버 몸체</button>
       </div>
       <div className="toolbar">
-        <button onClick={p.onUndo} disabled={!p.canUndo} title="Ctrl+Z">↶</button>
-        <button onClick={p.onRedo} disabled={!p.canRedo} title="Ctrl+Y">↷</button>
+        <button onClick={p.onUndo} disabled={!p.canUndo} title="실행 취소 · Ctrl+Z" aria-label="실행 취소">↶</button>
+        <button onClick={p.onRedo} disabled={!p.canRedo} title="다시 실행 · Ctrl+Y" aria-label="다시 실행">↷</button>
         <button onClick={p.onFitDevice}>기기 맞춤</button>
         <button onClick={p.onFitDomain}>전체 도메인</button>
         <label className="inline"><input type="checkbox" checked={p.showGrid} onChange={(e) => p.setShowGrid(e.target.checked)} /> 격자 마스크</label>

@@ -553,9 +553,10 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   // ---- drawing ------------------------------------------------------------------
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || size.w === 0) return;
+    if (!canvas || size.w <= 0 || size.h <= 0) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = size.w * dpr; canvas.height = size.h * dpr;
+    canvas.width = Math.max(1, Math.round(size.w * dpr));
+    canvas.height = Math.max(1, Math.round(size.h * dpr));
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const v = view;
@@ -638,7 +639,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
 
     if (!layerRef.current) layerRef.current = document.createElement('canvas');
     const layer = layerRef.current;
-    layer.width = size.w * dpr; layer.height = size.h * dpr;
+    layer.width = Math.max(1, Math.round(size.w * dpr));
+    layer.height = Math.max(1, Math.round(size.h * dpr));
     const L = layer.getContext('2d')!;
     L.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (!hatchRef.current) hatchRef.current = makeHatch();

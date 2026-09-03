@@ -43,7 +43,7 @@ export function OptimizePanel(p: Props) {
 
   return (
     <>
-      <p className="desc">{p.model.name}. 기준(현재 값)에서 출발해 {settings.explore === 'local' ? '작은 가우시안 변형으로' : '범위 전체를 라틴 하이퍼큐브로'} 탐색한 뒤, 상위 후보를 부모로 삼아 점수가 오른 방향은 계속 밀고(모멘텀) 그 외에는 무작위 걸음을 시도하며 걸음 폭을 성공률에 맞춰 조절하는 자기 개선 루프를 돕니다. 같은 시드와 설정이면 결과가 동일합니다.</p>
+      <p className="desc">{p.model.name}. {settings.explore === 'local' ? '현재 형상 가까이에서' : '지정한 범위 전체에서'} 후보를 찾고 점수순으로 정리합니다. 같은 설정과 시드는 같은 결과를 만듭니다.</p>
       {p.onRefreshBase && (
         <div className="row">
           <button onClick={p.onRefreshBase} disabled={p.running}>현재 형상을 기준으로 다시 가져오기</button>
@@ -135,7 +135,7 @@ export function OptimizePanel(p: Props) {
           </tbody>
         </table>
       )}
-      {ranked.length > 0 && <p className="muted small">* 기준 형상. 체크한 후보는 오른쪽에서 polar와 측면 응답을 겹쳐 비교합니다. "적용"은 후보 형상을 시뮬레이션 탭의 씬으로 보냅니다.</p>}
+      {ranked.length > 0 && <p className="muted small">* 기준 형상 · 체크한 후보는 오른쪽 그래프에 함께 표시됩니다.</p>}
     </>
   );
 }

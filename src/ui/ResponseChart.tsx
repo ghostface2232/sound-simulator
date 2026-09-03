@@ -16,7 +16,7 @@ interface Props {
   fMax?: number;
 }
 
-export const SERIES_COLORS = ['#d33', '#e58a1f', '#2a9d8f', '#3a6fd8', '#7b3fbf', '#b5179e', '#6a994e', '#7f5539'];
+export const SERIES_COLORS = ['#ff6547', '#f3a62f', '#29a39a', '#4f73e8', '#8a5bd6', '#d65b9a', '#69a94f', '#9a704e'];
 
 /** Frequency response (dB vs log f) for one or more series. */
 export function ResponseChart({ series, fMin = 200, fMax = 20000 }: Props) {
@@ -52,7 +52,7 @@ export function ResponseChart({ series, fMin = 200, fMax = 20000 }: Props) {
     yMin = Math.max(yMax - 60, Math.floor(yMin / 10) * 10 - 5);
     const ly = (v: number) => T + (H * (yMax - v)) / (yMax - yMin);
 
-    ctx.strokeStyle = '#ddd'; ctx.fillStyle = '#666'; ctx.font = '10px system-ui'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(29,32,30,0.10)'; ctx.fillStyle = '#777b76'; ctx.font = '10px "JetBrains Mono", monospace'; ctx.lineWidth = 1;
     for (const f of [200, 500, 1000, 2000, 5000, 10000, 20000]) {
       if (f < fMin || f > fMax) continue;
       ctx.beginPath(); ctx.moveTo(lx(f), T); ctx.lineTo(lx(f), T + H); ctx.stroke();

@@ -34,7 +34,7 @@ export function PolarChart({ series, freq, range = 30, normalize = 'each' }: Pro
     const cx = rect.width / 2, cy = rect.height / 2;
     const R = Math.min(cx, cy) - 22;
 
-    ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.fillStyle = '#666'; ctx.font = '10px system-ui';
+    ctx.strokeStyle = 'rgba(29,32,30,0.11)'; ctx.lineWidth = 1; ctx.fillStyle = '#777b76'; ctx.font = '10px "JetBrains Mono", monospace';
     for (let d = 0; d <= range; d += 10) {
       const rr = R * (1 - d / range);
       ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();
@@ -78,7 +78,7 @@ export function PolarChart({ series, freq, range = 30, normalize = 'each' }: Pro
         ctx.lineTo(x, y);
       }
       ctx.closePath(); ctx.stroke();
-      if (series.length === 1) { ctx.fillStyle = 'rgba(221,51,51,0.12)'; ctx.fill(); }
+      if (series.length === 1) { ctx.fillStyle = 'rgba(255,101,71,0.11)'; ctx.fill(); }
       if (s.label) {
         ctx.fillStyle = s.color;
         ctx.fillText(s.label, 4, 12 + idx * 12);

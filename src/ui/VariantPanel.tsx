@@ -47,7 +47,7 @@ export function VariantPanel(p: Props) {
 
   return (
     <>
-      <p className="desc">편집 중인 형상을 안(案)으로 저장해 두고 한 번에 평가해 어느 안이 가장 좋은지 비교합니다. 평가는 시뮬레이션 탭의 dx·시간·백엔드 설정을 씁니다.</p>
+      <p className="desc">현재 형상을 설계안으로 저장하고 같은 해석 설정으로 비교합니다.</p>
       <div className="row">
         <button className="primary" onClick={p.onSave} disabled={p.running}>현재 형상 저장</button>
         <button onClick={() => p.onEvaluate()} disabled={p.running || p.variants.length === 0}>모두 평가</button>
@@ -112,7 +112,7 @@ export function VariantPanel(p: Props) {
         </div>
         <p className="muted small">점수 = w₁·측면 레벨 − w₂·수평 ±{o.spread}° 편차 − w₃·측면 응답 편차 − w₄·(상하 최대 − 측면), {o.band[0]}~{o.band[1]} Hz 평균. 가중치를 바꾸면 저장된 결과로 점수가 즉시 다시 계산됩니다.</p>
       </details>
-      <p className="muted small">체크한 안들은 오른쪽에서 polar(공통 기준)와 측면 응답으로 겹쳐 비교됩니다. 안은 브라우저에 저장되어 새로고침 후에도 남습니다(결과는 다시 평가 필요).</p>
+      <p className="muted small">설계안은 브라우저에 저장됩니다. 해석 결과는 새로고침 뒤 다시 평가해야 합니다.</p>
     </>
   );
 }

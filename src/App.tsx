@@ -18,9 +18,19 @@ import { ResponseChart, SERIES_COLORS, type ResponseSeries } from './ui/Response
 import { OptimizePanel } from './ui/OptimizePanel';
 import { VariantPanel, type Variant } from './ui/VariantPanel';
 import { scoreResult, type ObjectiveSettings } from './engine/optimize';
+import {
+  ActivityIcon, AlertIcon, CheckIcon, CompareIcon, DesignIcon, InfoIcon,
+  OptimizeIcon, PlayIcon, StopIcon, WaveIcon,
+} from './ui/Icons';
 
 type Status = 'idle' | 'running' | 'done' | 'error';
 type Mode = 'sim' | 'opt' | 'cmp';
+
+const MODE_META: Record<Mode, { eyebrow: string; title: string; description: string }> = {
+  sim: { eyebrow: '01 · 설계', title: '형상 설계', description: '단면을 편집하고 음향장을 해석합니다.' },
+  opt: { eyebrow: '02 · 탐색', title: '형상 최적화', description: '목표에 맞는 설계 변수를 자동으로 탐색합니다.' },
+  cmp: { eyebrow: '03 · 결정', title: '안 비교', description: '저장한 설계안을 같은 기준으로 평가합니다.' },
+};
 
 const VARIANTS_KEY = 'speaker-sim.variants.v1';
 
@@ -39,8 +49,8 @@ function DiagnosticList({ items }: { items: Diagnostic[] }) {
     <ul className="diag">
       {items.map((d, i) => (
         <li key={`${d.code}-${i}`} className={`diag-${d.severity}`}>
-          <span className="diag-code">{d.severity === 'error' ? '오류' : d.severity === 'warning' ? '경고' : '정보'}</span>
-          {d.message}
+          <span className="diag-icon">{d.severity === 'error' || d.severity === 'warning' ? <AlertIcon /> : <InfoIcon />}</span>
+          <span><span className="diag-code">{d.severity === 'error' ? '오류' : d.severity === 'warning' ? '확인' : '정보'}</span>{d.message}</span>
         </li>
       ))}
     </ul>
@@ -371,7 +381,7 @@ export default function App() {
 
   const sideAngle = optSettings.objective.sideAngle;
   const polarSeries: PolarSeries[] = mode === 'sim'
-    ? (result ? [{ result, color: '#d33', label: '' }] : [])
+    ? (result ? [{ result, color: '#ff6547', label: '' }] : [])
     : mode === 'opt'
       ? compared.map((c, i) => ({ result: c.result!, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `#${c.id} ${c.score.toFixed(2)}` }))
       : comparedVariants.map((v, i) => ({ result: v.result!, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `${v.name} ${v.breakdown ? v.breakdown.score.toFixed(2) : ''}` }));
@@ -387,152 +397,205 @@ export default function App() {
       : (comparedVariants[0]?.result?.freqs[0] ?? params.fMin);
   const chartFMax = mode === 'opt' ? optSettings.fMax : params.fMax;
   const h = historyRef.current;
+  const meta = MODE_META[mode];
+  const errorCount = diagnostics.filter((d) => d.severity === 'error').length;
+  const warningCount = diagnostics.filter((d) => d.severity === 'warning').length;
+  const hasChartData = polarSeries.length > 0 || responseSeries.length > 0;
+  const visibleSceneName = mode === 'cmp' && cmpScene ? '저장된 설계안 미리보기' : mode === 'opt' && optScene ? '탐색 후보 미리보기' : scene.name;
 
   return (
-    <div className="app">
-      <aside className="panel left">
-        <h1>Speaker Sim <span className="sub">axisymmetric FDTD</span></h1>
-        <div className="modes">
-          <button className={mode === 'sim' ? 'active' : ''} onClick={() => enterMode('sim')}>시뮬레이션</button>
-          <button className={mode === 'opt' ? 'active' : ''} onClick={() => enterMode('opt')}>리플렉터 최적화</button>
-          <button className={mode === 'cmp' ? 'active' : ''} onClick={() => enterMode('cmp')}>형상 비교</button>
+    <div className="app-shell">
+      <header className="app-topbar">
+        <div className="brand" aria-label="Speaker Sim">
+          <span className="brand-mark"><WaveIcon /></span>
+          <span className="brand-copy"><strong>Speaker Sim</strong><small>Acoustic workspace</small></span>
         </div>
 
-        {mode === 'sim' ? (
-          <>
-            <label>프리셋
-              <select value={presetKey} onChange={(e) => loadPreset(e.target.value)}>
-                {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
-              </select>
-            </label>
-            {scene.description && <p className="desc">{scene.description}</p>}
+        <nav className="workflow-tabs" aria-label="작업 단계">
+          <button aria-pressed={mode === 'sim'} className={mode === 'sim' ? 'active' : ''} onClick={() => enterMode('sim')}>
+            <DesignIcon /><span><small>01</small> 설계</span>
+          </button>
+          <button aria-pressed={mode === 'opt'} className={mode === 'opt' ? 'active' : ''} onClick={() => enterMode('opt')}>
+            <OptimizeIcon /><span><small>02</small> 최적화</span>
+          </button>
+          <button aria-pressed={mode === 'cmp'} className={mode === 'cmp' ? 'active' : ''} onClick={() => enterMode('cmp')}>
+            <CompareIcon /><span><small>03</small> 비교</span>
+          </button>
+        </nav>
 
-            <ShapePanel
-              scene={scene} onChange={(s) => updateScene(s, true)}
-              selection={selection} onSelect={setSelection}
-              tool={tool} setTool={setTool}
-              showGrid={showGrid} setShowGrid={setShowGrid}
-              onFitDevice={() => canvasRef.current?.fitDevice()} onFitDomain={() => canvasRef.current?.fitDomain()}
-              onUndo={undo} onRedo={redo} canUndo={h.past.length > 0} canRedo={h.future.length > 0}
-              editable={!busy}
-            />
+        <div className="topbar-actions">
+          <span className={`health-pill ${errorCount ? 'error' : warningCount ? 'warning' : 'ready'}`}>
+            {errorCount ? <AlertIcon /> : <CheckIcon />}
+            {errorCount ? `오류 ${errorCount}` : warningCount ? `확인 ${warningCount}` : '해석 준비됨'}
+          </span>
+          {mode === 'sim' && (status === 'running' ? (
+            <button className="run-button stop" onClick={stop}><StopIcon /> 중단</button>
+          ) : (
+            <button className="run-button" onClick={run} disabled={busy || blocked} title={blocked ? '오류를 먼저 해결하세요' : undefined}>
+              <PlayIcon /> 해석 실행
+            </button>
+          ))}
+        </div>
+        <div className="app-progress" aria-hidden="true"><span style={{ transform: `scaleX(${status === 'running' ? progress : 0})` }} /></div>
+      </header>
 
-            <div className="grid2">
-              <label>dx (mm)
-                <input type="number" step="0.25" min="0.25" max="4" value={params.dx} onChange={setNum('dx')} />
-              </label>
-              <label>시간 (ms)
-                <input type="number" step="1" min="1" max="40" value={params.durationMs} onChange={setNum('durationMs')} />
-              </label>
-              <label>fMin (Hz)
-                <input type="number" step="50" min="20" max="5000" value={params.fMin} onChange={setNum('fMin')} />
-              </label>
-              <label>fMax (Hz)
-                <input type="number" step="1000" min="2000" max="40000" value={params.fMax} onChange={setNum('fMax')} />
-              </label>
-              <label>흡수층 (cells)
-                <input type="number" step="10" min="10" max="150" value={params.spongeCells} onChange={setNum('spongeCells')} />
-              </label>
-              <label>백엔드
-                <select value={params.backend ?? 'auto'} onChange={(e) => setParams({ ...params, backend: e.target.value as SimParams['backend'] })}>
-                  <option value="auto">auto (WebGPU 우선)</option>
-                  <option value="gpu">WebGPU</option>
-                  <option value="cpu">CPU</option>
-                </select>
-              </label>
-            </div>
+      <div className="workspace">
+        <aside className="inspector" aria-label={`${meta.title} 도구`}>
+          <div className="panel-heading">
+            <span className="eyebrow">{meta.eyebrow}</span>
+            <h1>{meta.title}</h1>
+            <p>{meta.description}</p>
+          </div>
 
-            <DiagnosticList items={diagnostics} />
+          <div className="panel-scroll">
+            {mode === 'sim' ? (
+              <>
+                <section className="control-card preset-card">
+                  <div className="section-heading"><span>시작 형상</span><span className="section-meta">Preset</span></div>
+                  <label className="field-label" htmlFor="preset-select">프리셋</label>
+                  <select id="preset-select" value={presetKey} onChange={(e) => loadPreset(e.target.value)}>
+                    {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
+                  </select>
+                  {scene.description && <p className="desc">{scene.description}</p>}
+                </section>
 
-            <div className="row">
-              <button className="primary" onClick={run} disabled={busy || blocked}
-                title={blocked ? '오류를 먼저 해결하세요' : undefined}>실행</button>
-              <button onClick={stop} disabled={status !== 'running'}>중단</button>
-            </div>
-            <div className="progress"><div style={{ width: `${progress * 100}%` }} /></div>
-            <p className="status">
-              {status === 'running' ? `계산 중 ${(progress * 100).toFixed(0)}%` : message}
-              {cells > 0 && <span className="muted"> · {grid!.Nr}×{grid!.Nz} = {cells.toLocaleString()} cells</span>}
-            </p>
-            {status === 'done' && <DiagnosticList items={runWarnings} />}
+                <section className="editor-tools">
+                  <div className="section-heading"><span>도구와 속성</span><span className="section-meta">{selection ? '선택됨' : '장면'}</span></div>
+                  <ShapePanel
+                    scene={scene} onChange={(s) => updateScene(s, true)}
+                    selection={selection} onSelect={setSelection}
+                    tool={tool} setTool={setTool}
+                    showGrid={showGrid} setShowGrid={setShowGrid}
+                    onFitDevice={() => canvasRef.current?.fitDevice()} onFitDomain={() => canvasRef.current?.fitDomain()}
+                    onUndo={undo} onRedo={redo} canUndo={h.past.length > 0} canRedo={h.future.length > 0}
+                    editable={!busy}
+                  />
+                </section>
 
-            <div className="row">
-              <button onClick={runParity} disabled={busy}>CPU/GPU 일치 검사</button>
-              {parityBusy && <span className="muted">검사 중…</span>}
-            </div>
-            {parity && (
-              <p className="muted small">
-                배플 피스톤 dx 2 mm, {parity.nSteps} 스텝: 시계열 최대 상대 차이 {(parity.maxRelDiff * 100).toExponential(2)} %,
-                스펙트럼 최대 차이 {parity.maxDbDiff.toFixed(3)} dB · CPU {(parity.cpuMs / 1000).toFixed(1)} s / GPU {(parity.gpuMs / 1000).toFixed(1)} s
-              </p>
+                <details className="disclosure-card">
+                  <summary><span>해석 설정</span><span className="summary-value">dx {params.dx} mm · {params.durationMs} ms</span></summary>
+                  <div className="grid2 disclosure-content">
+                    <label>격자 간격 (mm)<input type="number" step="0.25" min="0.25" max="4" value={params.dx} onChange={setNum('dx')} /></label>
+                    <label>해석 시간 (ms)<input type="number" step="1" min="1" max="40" value={params.durationMs} onChange={setNum('durationMs')} /></label>
+                    <label>최저 주파수 (Hz)<input type="number" step="50" min="20" max="5000" value={params.fMin} onChange={setNum('fMin')} /></label>
+                    <label>최고 주파수 (Hz)<input type="number" step="1000" min="2000" max="40000" value={params.fMax} onChange={setNum('fMax')} /></label>
+                    <label>흡수층 (cells)<input type="number" step="10" min="10" max="150" value={params.spongeCells} onChange={setNum('spongeCells')} /></label>
+                    <label>연산 장치
+                      <select value={params.backend ?? 'auto'} onChange={(e) => setParams({ ...params, backend: e.target.value as SimParams['backend'] })}>
+                        <option value="auto">자동 · WebGPU 우선</option><option value="gpu">WebGPU</option><option value="cpu">CPU</option>
+                      </select>
+                    </label>
+                  </div>
+                </details>
+
+                {diagnostics.length > 0 && <section className="diagnostic-card"><div className="section-heading"><span>실행 전 확인</span><span className="section-meta">{diagnostics.length}</span></div><DiagnosticList items={diagnostics} /></section>}
+
+                <details className="disclosure-card utility-card">
+                  <summary><span>정밀도 검증</span><span className="summary-value">CPU ↔ GPU</span></summary>
+                  <div className="disclosure-content stack">
+                    <button onClick={runParity} disabled={busy}>일치 검사 실행</button>
+                    {parityBusy && <p className="status">두 백엔드를 비교하고 있습니다…</p>}
+                    {parity && <p className="muted small">시계열 차이 {(parity.maxRelDiff * 100).toExponential(2)}%, 스펙트럼 차이 {parity.maxDbDiff.toFixed(3)} dB · CPU {(parity.cpuMs / 1000).toFixed(1)} s / GPU {(parity.gpuMs / 1000).toFixed(1)} s</p>}
+                  </div>
+                </details>
+              </>
+            ) : mode === 'cmp' ? (
+              <section className="workflow-panel">
+                <VariantPanel
+                  variants={variants} objective={optSettings.objective} paramsSignature={paramsSig}
+                  running={cmpRunning} runningId={cmpRunningId} selected={cmpSelected}
+                  onSave={saveVariant} onEvaluate={evaluateVariants} onStop={stop}
+                  onLoad={loadVariant} onUpdateFromEditor={updateVariantFromEditor} onRename={renameVariant} onDelete={deleteVariant}
+                  onToggle={toggleCmp} onPreview={(v) => setCmpScene(v.scene)} colorFor={colorForVariant} setObjective={setObjective}
+                />
+              </section>
+            ) : (
+              <section className="workflow-panel">
+                <label className="model-select">탐색 모델
+                  <select value={modelId} onChange={(e) => changeModel(e.target.value)} disabled={optRunning}>
+                    <option value={SCENE_MODEL_ID}>현재 형상 기반</option>
+                    {Object.values(MODELS).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </label>
+                <OptimizePanel
+                  model={model} variables={variables} setVariables={setVariables}
+                  settings={optSettings} setSettings={setOptSettings}
+                  running={optRunning} progress={optProgress} elapsedMs={optElapsed}
+                  onStart={startOptimize} onStop={stop} selected={selected} toggleSelected={toggleSelected}
+                  onApply={applyCandidate} colorFor={colorFor} onPreview={previewCandidate}
+                  onRefreshBase={modelId === SCENE_MODEL_ID ? refreshBase : undefined}
+                  baseStale={modelId === SCENE_MODEL_ID && scene !== optBase}
+                />
+                {status === 'error' && message && <p className="error">{message}</p>}
+              </section>
             )}
-          </>
-        ) : mode === 'cmp' ? (
-          <VariantPanel
-            variants={variants} objective={optSettings.objective} paramsSignature={paramsSig}
-            running={cmpRunning} runningId={cmpRunningId} selected={cmpSelected}
-            onSave={saveVariant} onEvaluate={evaluateVariants} onStop={stop}
-            onLoad={loadVariant} onUpdateFromEditor={updateVariantFromEditor} onRename={renameVariant} onDelete={deleteVariant}
-            onToggle={toggleCmp} onPreview={(v) => setCmpScene(v.scene)} colorFor={colorForVariant} setObjective={setObjective}
-          />
-        ) : (
-          <>
-            <label>모델
-              <select value={modelId} onChange={(e) => changeModel(e.target.value)} disabled={optRunning}>
-                <option value={SCENE_MODEL_ID}>현재 형상 (편집한 씬을 기준으로 변형)</option>
-                {Object.values(MODELS).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
-            </label>
-            <OptimizePanel
-              model={model}
-              variables={variables} setVariables={setVariables}
-              settings={optSettings} setSettings={setOptSettings}
-              running={optRunning} progress={optProgress} elapsedMs={optElapsed}
-              onStart={startOptimize} onStop={stop}
-              selected={selected} toggleSelected={toggleSelected}
-              onApply={applyCandidate} colorFor={colorFor} onPreview={previewCandidate}
-              onRefreshBase={modelId === SCENE_MODEL_ID ? refreshBase : undefined}
-              baseStale={modelId === SCENE_MODEL_ID && scene !== optBase}
+          </div>
+        </aside>
+
+        <main className="canvas-stage">
+          <div className="canvas-card">
+            <div className="canvas-context">
+              <span className="canvas-mode">{meta.eyebrow}</span>
+              <strong>{visibleSceneName || 'Untitled section'}</strong>
+            </div>
+            <div className="canvas-state">
+              <ActivityIcon />
+              <span>{status === 'running' ? `${(progress * 100).toFixed(0)}% 계산 중` : mode === 'sim' ? '편집 가능' : '미리보기'}</span>
+            </div>
+            <SectionCanvas
+              ref={canvasRef}
+              scene={mode === 'opt' && optScene ? optScene : mode === 'cmp' && cmpScene ? cmpScene : scene}
+              onChange={updateScene} selection={selection} onSelect={setSelection}
+              tool={tool} onToolDone={() => setTool('select')}
+              field={{ grid, frame, scale: colorScale }} gridMask={gridMask} diagnostics={diagnostics}
+              spongeMm={params.spongeCells * params.dx} editable={mode === 'sim' && !busy} snap={0.5}
             />
-            {status === 'error' && message && <p className="error">{message}</p>}
-            <p className="muted small">평가 백엔드: {(params.backend ?? 'auto').toUpperCase()} (시뮬레이션 탭에서 변경). 탐색은 지정한 dx 로 빠르게 순위를 매기므로, 최종 후보는 "적용" 후 dx 1 mm 로 다시 실행해 확인하세요.</p>
-          </>
-        )}
-      </aside>
+            <div className="canvas-footer">
+              <span>{mode === 'sim' ? '휠로 확대 · 빈 공간을 끌어 이동 · V 선택' : '행을 선택해 형상을 미리 봅니다'}</span>
+              <span className="numeric">{cells > 0 ? `${grid!.Nr} × ${grid!.Nz} · ${cells.toLocaleString()} cells` : 'r–z axisymmetric section'}</span>
+            </div>
+          </div>
+        </main>
 
-      <main className="center">
-        <SectionCanvas
-          ref={canvasRef}
-          scene={mode === 'opt' && optScene ? optScene : mode === 'cmp' && cmpScene ? cmpScene : scene}
-          onChange={updateScene}
-          selection={selection} onSelect={setSelection}
-          tool={tool} onToolDone={() => setTool('select')}
-          field={{ grid, frame, scale: colorScale }}
-          gridMask={gridMask}
-          diagnostics={diagnostics}
-          spongeMm={params.spongeCells * params.dx}
-          editable={mode === 'sim' && !busy}
-          snap={0.5}
-        />
-      </main>
+        <aside className="results-panel" aria-label="음향 분석 결과">
+          <div className="results-heading">
+            <div><span className="eyebrow">Live analysis</span><h2>음향 응답</h2></div>
+            <span className={`result-status ${hasChartData ? 'ready' : ''}`}>{hasChartData ? '결과 표시 중' : '해석 대기'}</span>
+          </div>
 
-      <aside className="panel right">
-        <h2>지향성 <span className="sub">{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}{mode !== 'sim' && ' · 공통 기준'}</span></h2>
-        <input type="range" min={Math.log10(chartFMin)} max={Math.log10(chartFMax)} step={0.01}
-          value={Math.log10(Math.min(Math.max(polarFreq, chartFMin), chartFMax))}
-          onChange={(e) => setPolarFreq(Math.round(10 ** +e.target.value / 50) * 50)} />
-        <div className="chart polar"><PolarChart series={polarSeries} freq={polarFreq} normalize={mode !== 'sim' ? 'shared' : 'each'} /></div>
+          <section className="chart-card polar-card">
+            <div className="chart-heading">
+              <div><span>지향성</span><strong>{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}</strong></div>
+              {mode !== 'sim' && <span className="comparison-label">공통 기준</span>}
+            </div>
+            <label className="frequency-control" htmlFor="polar-frequency"><span>{chartFMin >= 1000 ? `${chartFMin / 1000}k` : chartFMin}</span>
+              <input id="polar-frequency" aria-label="지향성 주파수" type="range" min={Math.log10(chartFMin)} max={Math.log10(chartFMax)} step={0.01}
+                value={Math.log10(Math.min(Math.max(polarFreq, chartFMin), chartFMax))}
+                onChange={(e) => setPolarFreq(Math.round(10 ** +e.target.value / 50) * 50)} />
+              <span>{chartFMax >= 1000 ? `${chartFMax / 1000}k` : chartFMax}</span>
+            </label>
+            <div className="chart polar"><PolarChart series={polarSeries} freq={polarFreq} normalize={mode !== 'sim' ? 'shared' : 'each'} /></div>
+            {!hasChartData && <div className="chart-empty"><WaveIcon /><strong>아직 결과가 없습니다</strong><span>형상을 준비한 뒤 해석을 실행하세요.</span></div>}
+          </section>
 
-        <h2>주파수 응답 <span className="sub">dB, 상대값{mode !== 'sim' && ` · ${sideAngle}° 방향`}</span></h2>
-        <div className="chart response">
-          <ResponseChart series={responseSeries} fMin={chartFMin} fMax={chartFMax} />
-        </div>
-        <p className="muted small">
-          0° = +z(위), 90° = 측면, 180° = 아래. 절대 SPL은 드라이버 데이터가 있어야 하므로 지금은 상대 dB입니다.
-          {mode === 'sim' && result && ` 표시 하한 ${Math.round(result.fMinReliable)} Hz는 해석 시간으로 결정됩니다.`}
-          {mode !== 'sim' && ' 비교 모드에서는 체크한 항목들을 같은 기준(전체 최대 = 0 dB)으로 겹쳐 그립니다.'}
-        </p>
-      </aside>
+          <section className="chart-card response-card">
+            <div className="chart-heading">
+              <div><span>주파수 응답</span><strong>{mode === 'sim' ? '5개 방향' : `${sideAngle}° 측면`}</strong></div>
+              <span className="comparison-label">상대 dB</span>
+            </div>
+            <div className="chart response"><ResponseChart series={responseSeries} fMin={chartFMin} fMax={chartFMax} /></div>
+            {!hasChartData && <div className="response-empty">해석 후 응답 곡선이 여기에 표시됩니다.</div>}
+          </section>
+
+          {status === 'done' && runWarnings.length > 0 && <section className="diagnostic-card results-diagnostics"><DiagnosticList items={runWarnings} /></section>}
+          {message && <div className={`run-message ${status}`}><span>{status === 'done' ? <CheckIcon /> : status === 'error' ? <AlertIcon /> : <ActivityIcon />}</span><p>{message}</p></div>}
+
+          <details className="technical-note">
+            <summary>그래프 읽는 법</summary>
+            <p>0°는 위, 90°는 측면, 180°는 아래입니다. 현재 결과는 드라이버 절대 감도가 없는 상대 dB입니다.{mode !== 'sim' && ' 체크한 항목은 같은 최대값을 기준으로 겹쳐 표시합니다.'}</p>
+          </details>
+        </aside>
+      </div>
     </div>
   );
 }
