@@ -43,7 +43,8 @@ export function sceneToSvg(scene: Scene): string {
     const role = p.role ?? 'housing';
     const fill = ROLE_FILL[role];
     const opacity = s.material === 'air' ? 0.35 : 1;
-    const id = (s.label ?? `shape-${i + 1}`).replace(/[^\w-]+/g, '_');
+    const safeLabel = (s.label ?? '').replace(/[^\w-]+/g, '_').replace(/^_+|_+$/g, '');
+    const id = safeLabel || `${role}-${i + 1}`;
     return `  <path id="${id}" data-role="${role}" data-material="${s.material}"${s.sigma !== undefined ? ` data-sigma="${s.sigma}"` : ''}${p.axis ? ` data-axis="${p.axis}"` : ''} fill="${fill}" fill-opacity="${opacity}" stroke="none" d="${nodesToD(p.nodes)}"/>`;
   });
   const drivers = scene.drivers.map((dr, i) => {

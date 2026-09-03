@@ -52,7 +52,7 @@ export function ResponseChart({ series, fMin = 200, fMax = 20000 }: Props) {
     yMin = Math.max(yMax - 60, Math.floor(yMin / 10) * 10 - 5);
     const ly = (v: number) => T + (H * (yMax - v)) / (yMax - yMin);
 
-    ctx.strokeStyle = 'rgba(29,32,30,0.10)'; ctx.fillStyle = '#777b76'; ctx.font = '10px "JetBrains Mono", monospace'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(29,32,30,0.10)'; ctx.fillStyle = '#777b76'; ctx.font = '10px "JetBrainsMono", monospace'; ctx.lineWidth = 1;
     for (const f of [200, 500, 1000, 2000, 5000, 10000, 20000]) {
       if (f < fMin || f > fMax) continue;
       ctx.beginPath(); ctx.moveTo(lx(f), T); ctx.lineTo(lx(f), T + H); ctx.stroke();

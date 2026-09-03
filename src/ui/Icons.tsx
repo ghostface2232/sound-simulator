@@ -57,3 +57,43 @@ export function CheckIcon(props: IconProps) {
 export function InfoIcon(props: IconProps) {
   return <svg {...base} {...props}><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>;
 }
+
+export function SelectIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="m5 3 13 8-6 1.5L9.5 19 5 3Z" /></svg>;
+}
+
+export function PenIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="m14.5 4.5 5 5L9 20H4v-5L14.5 4.5Z" /><path d="m12 7 5 5" /></svg>;
+}
+
+export function RectangleIcon(props: IconProps) {
+  return <svg {...base} {...props}><rect x="4" y="5" width="16" height="14" rx="2" /></svg>;
+}
+
+export function EllipseIcon(props: IconProps) {
+  return <svg {...base} {...props}><ellipse cx="12" cy="12" rx="8" ry="6.5" /></svg>;
+}
+
+export function UndoIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="m9 7-5 5 5 5" /><path d="M5 12h8a6 6 0 0 1 6 6" /></svg>;
+}
+
+export function RedoIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="m15 7 5 5-5 5" /><path d="M19 12h-8a6 6 0 0 0-6 6" /></svg>;
+}
+
+export function FitIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" /></svg>;
+}
+
+export function GridIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="M4 4h16v16H4zM9.3 4v16M14.7 4v16M4 9.3h16M4 14.7h16" /></svg>;
+}
+
+export function SaveIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="M5 4h12l2 2v14H5V4Z" /><path d="M8 4v6h8V4M8 20v-6h8v6" /></svg>;
+}
+
+export function TrashIcon(props: IconProps) {
+  return <svg {...base} {...props}><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg>;
+}

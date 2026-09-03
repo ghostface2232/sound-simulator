@@ -14,7 +14,7 @@ export interface GridInfo {
 }
 
 export type Selection =
-  | { kind: 'shape'; index: number; vertex?: number; handle?: 'in' | 'out' }
+  | { kind: 'shape'; index: number; vertex?: number; handle?: 'in' | 'out'; side?: -1 | 1 }
   | { kind: 'driver'; index: number }
   | { kind: 'measure' }
   | null;
@@ -71,7 +71,7 @@ type Drag =
   | { kind: 'rect'; start: Pt; current: Pt; ellipse: boolean; square: boolean }
   | { kind: 'pen'; node: number; startPx: [number, number]; dragged: boolean };
 
-const HANDLE_PX = 7;
+const HANDLE_PX = 9;
 
 export function roleOf(s: { role?: ShapeRole; material: string }): ShapeRole {
   return s.role ?? (s.material === 'rigid' ? 'housing' : s.material === 'fabric' ? 'fabric' : 'slot');
@@ -282,10 +282,10 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
           { node: (vi + n - 1) % n, which: 'out', pt: nodes[(vi + n - 1) % n].hOut },
           { node: (vi + 1) % n, which: 'in', pt: nodes[(vi + 1) % n].hIn },
         ];
-        for (const c of cands) if (near(c.pt, cursor)) return { sel: { kind: 'shape', index: idx, vertex: vi, handle: c.which }, drag: { kind: 'handle', index: idx, node: c.node, which: c.which } };
+        for (const c of cands) if (near(c.pt, cursor)) return { sel: { kind: 'shape', index: idx, vertex: vi, handle: c.which, side: xm < 0 ? -1 : 1 }, drag: { kind: 'handle', index: idx, node: c.node, which: c.which } };
       }
       for (let k = 0; k < nodes.length; k++) {
-        if (near(nodes[k].p, cursor)) return { sel: { kind: 'shape', index: idx, vertex: k }, drag: { kind: 'anchor', index: idx, node: k, orig: cloneNode(nodes[k]), start: cursor } };
+        if (near(nodes[k].p, cursor)) return { sel: { kind: 'shape', index: idx, vertex: k, side: xm < 0 ? -1 : 1 }, drag: { kind: 'anchor', index: idx, node: k, orig: cloneNode(nodes[k]), start: cursor } };
       }
     }
     for (let k = scene.drivers.length - 1; k >= 0; k--) {
@@ -505,7 +505,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       if (Math.hypot(nodes[k].p[0] - cur[0], nodes[k].p[1] - cur[1]) <= tol) {
         nodes[k] = nodes[k].hIn || nodes[k].hOut ? cornerNode(nodes[k]) : smoothNode(nodes, k);
         writeNodes(idx, nodes, true);
-        p.onSelect({ kind: 'shape', index: idx, vertex: k });
+        p.onSelect({ kind: 'shape', index: idx, vertex: k, side: xm < 0 ? -1 : 1 });
         return;
       }
     }
@@ -518,7 +518,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       if (segmentIsLine(a, b)) mid.p = [snapR(mid.p[0]), snapV(mid.p[1])];
       nodes.splice(hit.seg + 1, 0, mid);
       writeNodes(idx, nodes, true);
-      p.onSelect({ kind: 'shape', index: idx, vertex: hit.seg + 1 });
+      p.onSelect({ kind: 'shape', index: idx, vertex: hit.seg + 1, side: xm < 0 ? -1 : 1 });
     }
   };
 
@@ -605,7 +605,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.restore();
       ctx.strokeStyle = '#4a4036'; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(dx0, fy); ctx.lineTo(dx1, fy); ctx.stroke();
-      ctx.fillStyle = '#4a4036'; ctx.font = '11px system-ui';
+      ctx.fillStyle = '#4a4036'; ctx.font = '11px "SF Pro KR", sans-serif';
       ctx.fillText(`바닥 z = ${scene.floor.z}`, dx0 + 6, fy - 5);
     }
 
@@ -740,7 +740,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
           const [x, y] = P(m * d.point[0], d.point[1]);
           ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fillStyle = ERROR_COLOR; ctx.fill();
           ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-          ctx.fillStyle = '#fff'; ctx.font = 'bold 10px system-ui'; ctx.fillText('!', x - 2, y + 4);
+          ctx.fillStyle = '#fff'; ctx.font = '700 10px "SF Pro KR", sans-serif'; ctx.fillText('!', x - 2, y + 4);
         }
       }
     }
@@ -750,7 +750,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     const square = (r: number, z: number, filled: boolean) => {
       for (const m of [1, -1]) {
         const [x, y] = P(m * r, z);
-        ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8);
+        ctx.beginPath(); ctx.rect(x - 5, y - 5, 10, 10);
         ctx.fillStyle = filled ? SELECT_COLOR : '#fff'; ctx.fill();
         ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
       }
@@ -758,7 +758,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     const circle = (r: number, z: number, filled: boolean) => {
       for (const m of [1, -1]) {
         const [x, y] = P(m * r, z);
-        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2);
         ctx.fillStyle = filled ? SELECT_COLOR : '#fff'; ctx.fill();
         ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
       }
@@ -766,7 +766,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     const handleLine = (from: Pt, to: Pt) => {
       for (const m of [1, -1]) {
         const [x0, y0] = P(m * from[0], from[1]), [x1, y1] = P(m * to[0], to[1]);
-        ctx.strokeStyle = 'rgba(47,111,228,0.7)'; ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(47,111,228,0.78)'; ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
       }
     };
@@ -791,7 +791,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         }
       }
       const [lx, ly] = P(selBand.r1 + 3, selBand.axis === 'z' ? (selBand.z0 + selBand.z1) / 2 : selBand.z1 + 2);
-      ctx.fillStyle = SELECT_COLOR; ctx.font = '11px system-ui';
+      ctx.fillStyle = SELECT_COLOR; ctx.font = '11px "JetBrainsMono", monospace';
       ctx.fillText(selBand.axis === 'z'
         ? `z ${selBand.z0} → ${selBand.z1}  (${(selBand.z1 - selBand.z0).toFixed(1)} mm)`
         : `r ${selBand.r0} → ${selBand.r1}  (${(selBand.r1 - selBand.r0).toFixed(1)} mm)`, lx, ly + 4);
@@ -849,12 +849,6 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.setLineDash([]);
     }
 
-    const barMm = v.s > 12 ? 5 : v.s > 4 ? 10 : v.s > 1.2 ? 50 : 100;
-    ctx.strokeStyle = '#222'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(12, size.h - 14); ctx.lineTo(12 + barMm * v.s, size.h - 14); ctx.stroke();
-    ctx.fillStyle = '#222'; ctx.font = '11px system-ui';
-    ctx.fillText(`${barMm} mm`, 12, size.h - 18);
-    if (mouseMm) ctx.fillText(`r ${mouseMm[0].toFixed(1)}  z ${mouseMm[1].toFixed(1)} mm`, size.w - 150, size.h - 8);
   }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, toPx, snapR, snapV]);
 
   // Debug hook for automated UI checks: mm -> canvas px mapping and the scene being drawn.
@@ -865,6 +859,81 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   }, [view, p.scene, p.selection, toPx]);
 
   const cursor = p.tool !== 'select' ? 'crosshair' : dragRef.current?.kind === 'pan' ? 'grabbing' : 'default';
+  const scaleBarMm = view.s > 12 ? 5 : view.s > 4 ? 10 : view.s > 1.2 ? 50 : 100;
+
+  const anchorPopover = (() => {
+    const sel = p.selection;
+    if (!p.editable || sel?.kind !== 'shape' || sel.vertex === undefined || bandOf(p.scene.shapes[sel.index])) return null;
+    const path = shapeToPath(p.scene.shapes[sel.index]);
+    const node = path.nodes[sel.vertex];
+    if (!node) return null;
+    const side = sel.side ?? 1;
+    const [px, py] = toPx(side * node.p[0], node.p[1]);
+    const popoverWidth = 214, popoverHeight = 142, popoverGap = 18;
+    const nodeCount = path.nodes.length;
+    const previous = path.nodes[(sel.vertex + nodeCount - 1) % nodeCount];
+    const next = path.nodes[(sel.vertex + 1) % nodeCount];
+    const protectedPoints = [node.p, node.hIn, node.hOut, previous?.hOut, next?.hIn]
+      .filter((point): point is Pt => !!point)
+      .map((point) => toPx(side * point[0], point[1]));
+    const protectedRect = {
+      left: Math.min(...protectedPoints.map((point) => point[0])) - 16,
+      right: Math.max(...protectedPoints.map((point) => point[0])) + 16,
+      top: Math.min(...protectedPoints.map((point) => point[1])) - 16,
+      bottom: Math.max(...protectedPoints.map((point) => point[1])) + 16,
+    };
+    type PopoverPlacement = 'above' | 'below' | 'outward' | 'inward';
+    const candidates: { placement: PopoverPlacement; left: number; top: number }[] = [
+      { placement: 'above', left: px - popoverWidth / 2, top: protectedRect.top - popoverHeight - popoverGap },
+      { placement: 'below', left: px - popoverWidth / 2, top: protectedRect.bottom + popoverGap },
+      { placement: 'outward', left: side > 0 ? protectedRect.right + popoverGap : protectedRect.left - popoverWidth - popoverGap, top: py - popoverHeight / 2 },
+      { placement: 'inward', left: side > 0 ? protectedRect.left - popoverWidth - popoverGap : protectedRect.right + popoverGap, top: py - popoverHeight / 2 },
+    ];
+    const maxLeft = Math.max(12, size.w - popoverWidth - 12);
+    const maxTop = Math.max(72, size.h - popoverHeight - 70);
+    const fittedCandidates = candidates.map((candidate, priority) => {
+      const left = Math.max(12, Math.min(maxLeft, candidate.left));
+      const top = Math.max(72, Math.min(maxTop, candidate.top));
+      const overlapWidth = Math.max(0, Math.min(left + popoverWidth, protectedRect.right) - Math.max(left, protectedRect.left));
+      const overlapHeight = Math.max(0, Math.min(top + popoverHeight, protectedRect.bottom) - Math.max(top, protectedRect.top));
+      return { ...candidate, left, top, score: overlapWidth * overlapHeight + priority * 0.01 };
+    });
+    const { left, top, placement } = fittedCandidates.sort((a, b) => a.score - b.score)[0];
+    const curved = !!(node.hIn || node.hOut);
+    const writeAnchor = (axis: 0 | 1, value: number) => {
+      if (!Number.isFinite(value)) return;
+      const shapes = p.scene.shapes.slice();
+      const next = shapeToPath(shapes[sel.index]);
+      next.nodes = cloneNodes(next.nodes);
+      const current = next.nodes[sel.vertex!];
+      const delta: Pt = axis === 0 ? [Math.max(0, value) - current.p[0], 0] : [0, value - current.p[1]];
+      next.nodes[sel.vertex!] = translateNode(current, delta[0], delta[1]);
+      shapes[sel.index] = next;
+      p.onChange({ ...p.scene, shapes }, true);
+    };
+    const setCurved = (nextCurved: boolean) => {
+      if (nextCurved === curved) return;
+      const shapes = p.scene.shapes.slice();
+      const next = shapeToPath(shapes[sel.index]);
+      next.nodes = cloneNodes(next.nodes);
+      next.nodes[sel.vertex!] = nextCurved ? smoothNode(next.nodes, sel.vertex!) : cornerNode(next.nodes[sel.vertex!]);
+      shapes[sel.index] = next;
+      p.onChange({ ...p.scene, shapes }, true);
+    };
+    return (
+      <div className={`anchor-popover place-${placement} ${side > 0 ? 'side-right' : 'side-left'}`} role="dialog" aria-label={`앵커 ${sel.vertex + 1} 편집`} style={{ left, top }} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="anchor-popover-head"><strong>앵커 {sel.vertex + 1}</strong><span>{curved ? '곡선' : '코너'}</span></div>
+        <div className="anchor-coordinates">
+          <label>r<input aria-label="앵커 r" type="number" step="0.1" value={node.p[0]} onChange={(e) => writeAnchor(0, +e.target.value)} /></label>
+          <label>z<input aria-label="앵커 z" type="number" step="0.1" value={node.p[1]} onChange={(e) => writeAnchor(1, +e.target.value)} /></label>
+        </div>
+        <div className="anchor-type-toggle" aria-label="앵커 유형">
+          <button className={!curved ? 'active' : ''} onClick={() => setCurved(false)}>코너</button>
+          <button className={curved ? 'active' : ''} onClick={() => setCurved(true)}>곡선</button>
+        </div>
+      </div>
+    );
+  })();
 
   return (
     <div ref={wrapRef} className="section-wrap">
@@ -881,6 +950,16 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         onKeyDown={onKeyDown}
         onContextMenu={(e) => e.preventDefault()}
       />
+      {anchorPopover}
+      <div className="canvas-readout canvas-scale numeric" aria-hidden="true">
+        <span>{scaleBarMm} mm</span>
+        <i className="canvas-scale-line" style={{ width: Math.max(38, scaleBarMm * view.s) }} />
+      </div>
+      {mouseMm && (
+        <div className="canvas-readout canvas-coordinates numeric" aria-label={`포인터 좌표 r ${mouseMm[0].toFixed(1)}, z ${mouseMm[1].toFixed(1)} 밀리미터`}>
+          <span>r</span><b>{mouseMm[0].toFixed(1)}</b><span>z</span><b>{mouseMm[1].toFixed(1)}</b><span>mm</span>
+        </div>
+      )}
       <div className="legend">
         {(['housing', 'reflector', 'slot', 'fabric', 'driver'] as ShapeRole[]).map((r) => (
           <span key={r}><i style={{ background: ROLE_COLORS[r].fill, borderColor: ROLE_COLORS[r].stroke }} />{ROLE_COLORS[r].name}</span>

@@ -34,7 +34,7 @@ export function PolarChart({ series, freq, range = 30, normalize = 'each' }: Pro
     const cx = rect.width / 2, cy = rect.height / 2;
     const R = Math.min(cx, cy) - 22;
 
-    ctx.strokeStyle = 'rgba(29,32,30,0.11)'; ctx.lineWidth = 1; ctx.fillStyle = '#777b76'; ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.strokeStyle = 'rgba(29,32,30,0.11)'; ctx.lineWidth = 1; ctx.fillStyle = '#777b76'; ctx.font = '10px "JetBrainsMono", monospace';
     for (let d = 0; d <= range; d += 10) {
       const rr = R * (1 - d / range);
       ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();

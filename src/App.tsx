@@ -4,7 +4,7 @@ import { PRESETS, pistonBaffleScene } from './engine/presets';
 import { diagnose, type ParityReport } from './engine/runner';
 import type { SimResult } from './engine/analysis';
 import { hasErrors, type Diagnostic } from './engine/checks';
-import { normalizeScene } from './engine/geometry';
+import { expandDomainToFit, fitMeasurementArc, normalizeScene } from './engine/geometry';
 import { buildGrid } from './engine/rasterize';
 import {
   DEFAULT_OPTIMIZE, MODELS, SCENE_MODEL_ID, makeSceneModel,
@@ -20,19 +20,28 @@ import { VariantPanel, type Variant } from './ui/VariantPanel';
 import { scoreResult, type ObjectiveSettings } from './engine/optimize';
 import {
   ActivityIcon, AlertIcon, CheckIcon, CompareIcon, DesignIcon, InfoIcon,
-  OptimizeIcon, PlayIcon, StopIcon, WaveIcon,
+  EllipseIcon, FitIcon, GridIcon, OptimizeIcon, PenIcon, PlayIcon, RectangleIcon,
+  RedoIcon, SaveIcon, SelectIcon, StopIcon, UndoIcon, WaveIcon,
 } from './ui/Icons';
 
 type Status = 'idle' | 'running' | 'done' | 'error';
 type Mode = 'sim' | 'opt' | 'cmp';
 
-const MODE_META: Record<Mode, { eyebrow: string; title: string; description: string }> = {
-  sim: { eyebrow: '01 · 설계', title: '형상 설계', description: '단면을 편집하고 음향장을 해석합니다.' },
-  opt: { eyebrow: '02 · 탐색', title: '형상 최적화', description: '목표에 맞는 설계 변수를 자동으로 탐색합니다.' },
-  cmp: { eyebrow: '03 · 결정', title: '안 비교', description: '저장한 설계안을 같은 기준으로 평가합니다.' },
+const MODE_META: Record<Mode, { eyebrow: string; title: string }> = {
+  sim: { eyebrow: 'Model', title: '모델 설계' },
+  opt: { eyebrow: 'Explore', title: '설계 탐색' },
+  cmp: { eyebrow: 'Compare', title: '비교' },
 };
 
 const VARIANTS_KEY = 'speaker-sim.variants.v1';
+const formatFrequency = (hz: number) => hz >= 1000
+  ? `${Number((hz / 1000).toFixed(hz >= 10000 ? 0 : 1))} kHz`
+  : `${Math.round(hz)} Hz`;
+
+function withFittedMeasurement(scene: Scene, params: SimParams): Scene {
+  const expanded = expandDomainToFit(scene, params.spongeCells * params.dx);
+  return { ...expanded, measure: fitMeasurementArc(expanded, params.spongeCells * params.dx) };
+}
 
 function loadVariants(): Variant[] {
   try {
@@ -62,7 +71,7 @@ const HISTORY_MAX = 100;
 export default function App() {
   const [mode, setMode] = useState<Mode>('sim');
   const [presetKey, setPresetKey] = useState<string>('side-radial');
-  const [scene, setSceneState] = useState<Scene>(() => normalizeScene(PRESETS['side-radial']()));
+  const [scene, setSceneState] = useState<Scene>(() => withFittedMeasurement(normalizeScene(PRESETS['side-radial']()), DEFAULT_PARAMS));
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS);
   const [status, setStatus] = useState<Status>('idle');
   const [message, setMessage] = useState<string>('');
@@ -80,6 +89,7 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null);
   const [tool, setTool] = useState<Tool>('select');
   const [showGrid, setShowGrid] = useState(false);
+  const [autoMeasure, setAutoMeasure] = useState(true);
   const canvasRef = useRef<SectionCanvasHandle>(null);
   const historyRef = useRef<{ past: Scene[]; future: Scene[]; committed: Scene }>({ past: [], future: [], committed: scene });
   const [historyTick, setHistoryTick] = useState(0);
@@ -104,11 +114,15 @@ export default function App() {
   const [cmpRunningId, setCmpRunningId] = useState<string | null>(null);
   const [cmpSelected, setCmpSelected] = useState<Set<string>>(new Set());
   const [cmpScene, setCmpScene] = useState<Scene | null>(null);
+  const [savePulse, setSavePulse] = useState(false);
   const variantsRef = useRef(variants); variantsRef.current = variants;
+  const saveNoticeTimerRef = useRef<number | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
   const modelRef = useRef(model); modelRef.current = model;
   const peakRef = useRef(0);
+  const mountedRef = useRef(false);
+  useEffect(() => { mountedRef.current = true; }, []);
 
   /** Scene updates: commit=true records an undo step. */
   const updateScene = useCallback((next: Scene, commit = true) => {
@@ -125,6 +139,17 @@ export default function App() {
     }
     setResult(null); setFrame(null); setGrid(null); setRunWarnings([]);
   }, []);
+  const updateEditedScene = useCallback((next: Scene, commit = true) => {
+    const fitted = autoMeasure && commit && selection?.kind !== 'measure' ? withFittedMeasurement(next, params) : next;
+    updateScene(fitted, commit);
+  }, [autoMeasure, params, selection, updateScene]);
+  const fitMeasureNow = useCallback(() => {
+    updateScene(withFittedMeasurement(scene, params), true);
+  }, [scene, params, updateScene]);
+  const changeAutoMeasure = useCallback((enabled: boolean) => {
+    setAutoMeasure(enabled);
+    if (enabled) updateScene(withFittedMeasurement(scene, params), true);
+  }, [scene, params, updateScene]);
   const resetScene = useCallback((next: Scene) => {
     historyRef.current = { past: [], future: [], committed: next };
     setHistoryTick((t) => t + 1);
@@ -230,7 +255,10 @@ export default function App() {
       }
     };
     workerRef.current = w;
-    return () => w.terminate();
+    return () => {
+      w.terminate();
+      if (saveNoticeTimerRef.current !== null) window.clearTimeout(saveNoticeTimerRef.current);
+    };
   }, []);
 
   const diagnostics = useMemo<Diagnostic[]>(() => diagnose(scene, params), [scene, params]);
@@ -254,6 +282,9 @@ export default function App() {
     const id = `v${Date.now().toString(36)}`;
     setVariants((prev) => [...prev, { id, name: `안 ${prev.length + 1}`, scene }]);
     setCmpScene(scene);
+    setSavePulse(true);
+    if (saveNoticeTimerRef.current !== null) window.clearTimeout(saveNoticeTimerRef.current);
+    saveNoticeTimerRef.current = window.setTimeout(() => setSavePulse(false), 1400);
   }, [scene]);
   const evaluateVariants = useCallback((ids?: string[]) => {
     if (!workerRef.current) return;
@@ -262,7 +293,10 @@ export default function App() {
     setCmpRunning(true); setMessage(''); setResult(null); setFrame(null); setGrid(null);
     workerRef.current.postMessage({ type: 'evaluate', items, params } satisfies WorkerIn);
   }, [params]);
-  const loadVariant = useCallback((v: Variant) => { resetScene(normalizeScene(v.scene)); setOptBase(v.scene); setMode('sim'); setTimeout(() => canvasRef.current?.fitDevice(), 0); }, [resetScene]);
+  const loadVariant = useCallback((v: Variant) => {
+    const next = autoMeasure ? withFittedMeasurement(normalizeScene(v.scene), params) : normalizeScene(v.scene);
+    resetScene(next); setOptBase(next); setMode('sim'); setTimeout(() => canvasRef.current?.fitDevice(), 0);
+  }, [autoMeasure, params, resetScene]);
   const updateVariantFromEditor = useCallback((v: Variant) => {
     setVariants((prev) => prev.map((x) => x.id === v.id ? { id: x.id, name: x.name, scene } : x));
     setCmpScene(scene);
@@ -283,9 +317,11 @@ export default function App() {
 
   const loadPreset = useCallback((key: string) => {
     setPresetKey(key);
-    resetScene(normalizeScene(PRESETS[key]()));
+    const next = normalizeScene(PRESETS[key]());
+    updateScene(autoMeasure ? withFittedMeasurement(next, params) : next, true);
+    setSelection(null);
     setTimeout(() => canvasRef.current?.fitDevice(), 0);
-  }, [resetScene]);
+  }, [autoMeasure, params, updateScene]);
 
   const run = useCallback(() => {
     if (blocked || !workerRef.current) return;
@@ -354,15 +390,17 @@ export default function App() {
   }, []);
 
   const applyCandidate = useCallback((c: Candidate) => {
-    const s = normalizeScene(model.build(c.params));
+    let s = normalizeScene(model.build(c.params));
     s.description = `${(s.description ?? '').replace(/ \[최적화 후보[^\]]*\]/g, '')} [최적화 후보 #${c.id}, 점수 ${c.score.toFixed(2)}]`;
+    if (autoMeasure) s = withFittedMeasurement(s, params);
     if (model.id !== SCENE_MODEL_ID) setPresetKey('side-radial');
     resetScene(s);
     // The applied candidate becomes the next baseline, so edit -> optimise -> apply can be repeated.
     setOptBase(s);
     setMode('sim');
+    setMessage(`후보 #${c.id}을 설계에 적용했습니다. 정밀 해석으로 최종 확인하세요.`);
     setTimeout(() => canvasRef.current?.fitDevice(), 0);
-  }, [model, resetScene]);
+  }, [autoMeasure, model, params, resetScene]);
 
   const setNum = (key: keyof SimParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setParams({ ...params, [key]: +e.target.value });
@@ -400,33 +438,38 @@ export default function App() {
   const meta = MODE_META[mode];
   const errorCount = diagnostics.filter((d) => d.severity === 'error').length;
   const warningCount = diagnostics.filter((d) => d.severity === 'warning').length;
+  const actionableDiagnostics = diagnostics.filter((d) => d.severity !== 'info');
   const hasChartData = polarSeries.length > 0 || responseSeries.length > 0;
-  const visibleSceneName = mode === 'cmp' && cmpScene ? '저장된 설계안 미리보기' : mode === 'opt' && optScene ? '탐색 후보 미리보기' : scene.name;
+  const previewedVariant = mode === 'cmp' && cmpScene ? variants.find((v) => v.scene === cmpScene) : undefined;
+  const visibleSceneName = mode === 'cmp' && cmpScene ? (previewedVariant?.name ?? '저장된 설계안') : mode === 'opt' && optScene ? '탐색 후보 미리보기' : scene.name;
+  const canvasHint = mode === 'sim' && tool === 'pen'
+          ? '클릭으로 앵커 추가 · 드래그로 곡선 생성 · Enter로 닫기'
+          : null;
 
   return (
     <div className="app-shell">
       <header className="app-topbar">
         <div className="brand" aria-label="Speaker Sim">
           <span className="brand-mark"><WaveIcon /></span>
-          <span className="brand-copy"><strong>Speaker Sim</strong><small>Acoustic workspace</small></span>
+          <span className="brand-copy"><strong>Speaker Sim</strong></span>
         </div>
 
-        <nav className="workflow-tabs" aria-label="작업 단계">
+        <nav className="workflow-tabs" aria-label="작업 공간">
           <button aria-pressed={mode === 'sim'} className={mode === 'sim' ? 'active' : ''} onClick={() => enterMode('sim')}>
-            <DesignIcon /><span><small>01</small> 설계</span>
+            <DesignIcon /><span>설계</span>
           </button>
           <button aria-pressed={mode === 'opt'} className={mode === 'opt' ? 'active' : ''} onClick={() => enterMode('opt')}>
-            <OptimizeIcon /><span><small>02</small> 최적화</span>
+            <OptimizeIcon /><span>탐색</span>
           </button>
           <button aria-pressed={mode === 'cmp'} className={mode === 'cmp' ? 'active' : ''} onClick={() => enterMode('cmp')}>
-            <CompareIcon /><span><small>03</small> 비교</span>
+            <CompareIcon /><span>비교</span>{variants.length > 0 && <b className="nav-count">{variants.length}</b>}
           </button>
         </nav>
 
         <div className="topbar-actions">
           <span className={`health-pill ${errorCount ? 'error' : warningCount ? 'warning' : 'ready'}`}>
             {errorCount ? <AlertIcon /> : <CheckIcon />}
-            {errorCount ? `오류 ${errorCount}` : warningCount ? `확인 ${warningCount}` : '해석 준비됨'}
+            {errorCount ? `오류 ${errorCount}` : warningCount ? `확인 ${warningCount}` : '준비'}
           </span>
           {mode === 'sim' && (status === 'running' ? (
             <button className="run-button stop" onClick={stop}><StopIcon /> 중단</button>
@@ -444,33 +487,31 @@ export default function App() {
           <div className="panel-heading">
             <span className="eyebrow">{meta.eyebrow}</span>
             <h1>{meta.title}</h1>
-            <p>{meta.description}</p>
           </div>
 
           <div className="panel-scroll">
-            {mode === 'sim' ? (
+            <div className={`panel-view ${mountedRef.current ? '' : 'initial'}`} key={mode}>
+              {mode === 'sim' ? (
               <>
-                <section className="control-card preset-card">
-                  <div className="section-heading"><span>시작 형상</span><span className="section-meta">Preset</span></div>
-                  <label className="field-label" htmlFor="preset-select">프리셋</label>
-                  <select id="preset-select" value={presetKey} onChange={(e) => loadPreset(e.target.value)}>
-                    {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
-                  </select>
-                  {scene.description && <p className="desc">{scene.description}</p>}
-                </section>
-
                 <section className="editor-tools">
-                  <div className="section-heading"><span>도구와 속성</span><span className="section-meta">{selection ? '선택됨' : '장면'}</span></div>
                   <ShapePanel
-                    scene={scene} onChange={(s) => updateScene(s, true)}
+                    scene={scene} onChange={(s) => updateEditedScene(s, true)}
                     selection={selection} onSelect={setSelection}
-                    tool={tool} setTool={setTool}
-                    showGrid={showGrid} setShowGrid={setShowGrid}
-                    onFitDevice={() => canvasRef.current?.fitDevice()} onFitDomain={() => canvasRef.current?.fitDomain()}
-                    onUndo={undo} onRedo={redo} canUndo={h.past.length > 0} canRedo={h.future.length > 0}
+                    autoMeasure={autoMeasure} onAutoMeasureChange={changeAutoMeasure} onFitMeasure={fitMeasureNow}
                     editable={!busy}
                   />
                 </section>
+
+                <details className="disclosure-card preset-card">
+                  <summary><span>예제 형상에서 시작</span><span className="summary-value">{presetKey}</span></summary>
+                  <div className="disclosure-content">
+                    <label className="field-label" htmlFor="preset-select">예제 선택</label>
+                    <select id="preset-select" value={presetKey} onChange={(e) => loadPreset(e.target.value)}>
+                      {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
+                    </select>
+                    {scene.description && <p className="desc">{scene.description}</p>}
+                  </div>
+                </details>
 
                 <details className="disclosure-card">
                   <summary><span>해석 설정</span><span className="summary-value">dx {params.dx} mm · {params.durationMs} ms</span></summary>
@@ -488,7 +529,7 @@ export default function App() {
                   </div>
                 </details>
 
-                {diagnostics.length > 0 && <section className="diagnostic-card"><div className="section-heading"><span>실행 전 확인</span><span className="section-meta">{diagnostics.length}</span></div><DiagnosticList items={diagnostics} /></section>}
+                {actionableDiagnostics.length > 0 && <section className="diagnostic-card"><div className="section-heading"><span>실행 전 확인</span><span className="section-meta">{actionableDiagnostics.length}</span></div><DiagnosticList items={actionableDiagnostics} /></section>}
 
                 <details className="disclosure-card utility-card">
                   <summary><span>정밀도 검증</span><span className="summary-value">CPU ↔ GPU</span></summary>
@@ -511,12 +552,15 @@ export default function App() {
               </section>
             ) : (
               <section className="workflow-panel">
-                <label className="model-select">탐색 모델
-                  <select value={modelId} onChange={(e) => changeModel(e.target.value)} disabled={optRunning}>
-                    <option value={SCENE_MODEL_ID}>현재 형상 기반</option>
-                    {Object.values(MODELS).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  </select>
-                </label>
+                <details className="inline-disclosure model-source">
+                  <summary><span>탐색 기준</span><span>{modelId === SCENE_MODEL_ID ? '현재 형상' : model.name}</span></summary>
+                  <label className="model-select disclosure-content">
+                    <select aria-label="탐색 기준" value={modelId} onChange={(e) => changeModel(e.target.value)} disabled={optRunning}>
+                      <option value={SCENE_MODEL_ID}>현재 형상</option>
+                      {Object.values(MODELS).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </label>
+                </details>
                 <OptimizePanel
                   model={model} variables={variables} setVariables={setVariables}
                   settings={optSettings} setSettings={setOptSettings}
@@ -528,7 +572,8 @@ export default function App() {
                 />
                 {status === 'error' && message && <p className="error">{message}</p>}
               </section>
-            )}
+              )}
+            </div>
           </div>
         </aside>
 
@@ -538,22 +583,42 @@ export default function App() {
               <span className="canvas-mode">{meta.eyebrow}</span>
               <strong>{visibleSceneName || 'Untitled section'}</strong>
             </div>
-            <div className="canvas-state">
-              <ActivityIcon />
-              <span>{status === 'running' ? `${(progress * 100).toFixed(0)}% 계산 중` : mode === 'sim' ? '편집 가능' : '미리보기'}</span>
+            <div className="canvas-top-actions">
+              {mode === 'sim' && (
+                <button className={`save-variant-button ${savePulse ? 'saved' : ''}`} onClick={saveVariant} disabled={busy}>
+                  {savePulse ? <CheckIcon /> : <SaveIcon />}
+                  <span>{savePulse ? '안에 저장됨' : '비교할 안 저장'}</span>
+                </button>
+              )}
+              <div className="canvas-state">
+                <ActivityIcon />
+                <span>{status === 'running' ? `${(progress * 100).toFixed(0)}% 계산 중` : mode === 'sim' ? '편집' : '미리보기'}</span>
+              </div>
             </div>
             <SectionCanvas
               ref={canvasRef}
               scene={mode === 'opt' && optScene ? optScene : mode === 'cmp' && cmpScene ? cmpScene : scene}
-              onChange={updateScene} selection={selection} onSelect={setSelection}
+              onChange={updateEditedScene} selection={selection} onSelect={setSelection}
               tool={tool} onToolDone={() => setTool('select')}
               field={{ grid, frame, scale: colorScale }} gridMask={gridMask} diagnostics={diagnostics}
               spongeMm={params.spongeCells * params.dx} editable={mode === 'sim' && !busy} snap={0.5}
             />
-            <div className="canvas-footer">
-              <span>{mode === 'sim' ? '휠로 확대 · 빈 공간을 끌어 이동 · V 선택' : '행을 선택해 형상을 미리 봅니다'}</span>
-              <span className="numeric">{cells > 0 ? `${grid!.Nr} × ${grid!.Nz} · ${cells.toLocaleString()} cells` : 'r–z axisymmetric section'}</span>
-            </div>
+            {mode === 'sim' && (
+              <div className="canvas-tools" role="toolbar" aria-label="캔버스 편집 도구">
+                <button className={tool === 'select' ? 'active' : ''} aria-label="선택 도구" title="선택 · V" onClick={() => setTool('select')} disabled={busy}><SelectIcon /></button>
+                <button className={tool === 'pen' ? 'active' : ''} aria-label="펜 도구" title="펜 · P" onClick={() => setTool('pen')} disabled={busy}><PenIcon /></button>
+                <button className={tool === 'rect' ? 'active' : ''} aria-label="사각형 도구" title="사각형 · R" onClick={() => setTool('rect')} disabled={busy}><RectangleIcon /></button>
+                <button className={tool === 'ellipse' ? 'active' : ''} aria-label="원 도구" title="원 · E" onClick={() => setTool('ellipse')} disabled={busy}><EllipseIcon /></button>
+                <span className="tool-divider" />
+                <button aria-label="실행 취소" title="실행 취소 · Ctrl+Z" onClick={undo} disabled={!h.past.length || busy}><UndoIcon /></button>
+                <button aria-label="다시 실행" title="다시 실행 · Ctrl+Y" onClick={redo} disabled={!h.future.length || busy}><RedoIcon /></button>
+                <span className="tool-divider" />
+                <button aria-label="기기에 맞춤" title="기기에 맞춤" onClick={() => canvasRef.current?.fitDevice()}><FitIcon /></button>
+                <button className={showGrid ? 'active' : ''} aria-pressed={showGrid} aria-label="격자 마스크" title="격자 마스크" onClick={() => setShowGrid((v) => !v)}><GridIcon /></button>
+              </div>
+            )}
+            {canvasHint && <div className="canvas-hint">{canvasHint}</div>}
+            <div className="canvas-metrics numeric">{cells > 0 ? `${grid!.Nr} × ${grid!.Nz} · ${cells.toLocaleString()} cells` : 'r–z 단면'}</div>
           </div>
         </main>
 
@@ -565,17 +630,17 @@ export default function App() {
 
           <section className="chart-card polar-card">
             <div className="chart-heading">
-              <div><span>지향성</span><strong>{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}</strong></div>
+              <div><span>지향성</span><strong>{formatFrequency(polarFreq)}</strong></div>
               {mode !== 'sim' && <span className="comparison-label">공통 기준</span>}
             </div>
-            <label className="frequency-control" htmlFor="polar-frequency"><span>{chartFMin >= 1000 ? `${chartFMin / 1000}k` : chartFMin}</span>
+            <label className="frequency-control" htmlFor="polar-frequency"><span>{formatFrequency(chartFMin)}</span>
               <input id="polar-frequency" aria-label="지향성 주파수" type="range" min={Math.log10(chartFMin)} max={Math.log10(chartFMax)} step={0.01}
                 value={Math.log10(Math.min(Math.max(polarFreq, chartFMin), chartFMax))}
                 onChange={(e) => setPolarFreq(Math.round(10 ** +e.target.value / 50) * 50)} />
-              <span>{chartFMax >= 1000 ? `${chartFMax / 1000}k` : chartFMax}</span>
+              <span>{formatFrequency(chartFMax)}</span>
             </label>
             <div className="chart polar"><PolarChart series={polarSeries} freq={polarFreq} normalize={mode !== 'sim' ? 'shared' : 'each'} /></div>
-            {!hasChartData && <div className="chart-empty"><WaveIcon /><strong>아직 결과가 없습니다</strong><span>형상을 준비한 뒤 해석을 실행하세요.</span></div>}
+            {!hasChartData && <div className="chart-empty"><WaveIcon /><strong>결과 없음</strong></div>}
           </section>
 
           <section className="chart-card response-card">
@@ -584,7 +649,7 @@ export default function App() {
               <span className="comparison-label">상대 dB</span>
             </div>
             <div className="chart response"><ResponseChart series={responseSeries} fMin={chartFMin} fMax={chartFMax} /></div>
-            {!hasChartData && <div className="response-empty">해석 후 응답 곡선이 여기에 표시됩니다.</div>}
+            {!hasChartData && <div className="response-empty">응답 없음</div>}
           </section>
 
           {status === 'done' && runWarnings.length > 0 && <section className="diagnostic-card results-diagnostics"><DiagnosticList items={runWarnings} /></section>}

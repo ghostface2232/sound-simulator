@@ -215,7 +215,7 @@ export function checkSetup(scene: Scene, params: SimParams): Diagnostic[] {
   if (!Number.isFinite(fRel)) {
     err('duration-short', `해석 시간 ${durationMs} ms 가 측정 원호 도달 시간 ${arrivalDelayMs(scene).toFixed(2)} ms 보다 짧습니다.`);
   } else if (isNum(fMin) && fMin < fRel) {
-    warn('fmin-unreliable', `${durationMs} ms 해석으로 신뢰할 수 있는 최저 주파수는 약 ${Math.round(fRel)} Hz 입니다. fMin ${fMin} Hz 까지 보려면 ${requiredDurationMs(scene, fMin).toFixed(1)} ms 이상이 필요합니다. 그 아래 대역은 결과에서 제외됩니다.`);
+    warn('fmin-unreliable', `${fMin} Hz는 ${requiredDurationMs(scene, fMin).toFixed(1)} ms 이상 필요합니다. 현재 ${durationMs} ms에서는 약 ${Math.round(fRel)} Hz 아래를 제외합니다.`);
   }
 
   // Sponge geometry.

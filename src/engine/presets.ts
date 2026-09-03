@@ -10,8 +10,8 @@ export function pistonBaffleScene(a = 20, extent = 320, measureRadius = 150): Sc
     // Only the half-space above the baffle is meaningful.
     measure: { radius: measureRadius, zCenter: 0, angleStep: 5, angleMax: 90 },
     // Baffle top at z = -0.5 so it lands on a cell boundary (dx = 1) flush with the piston face.
-    shapes: [{ kind: 'rect', r: [0, extent], z: [-170, -0.5], material: 'rigid', label: 'baffle' }],
-    drivers: [{ kind: 'piston', z: 0, r: [0, a], dir: '+z', label: 'piston' }],
+    shapes: [{ kind: 'rect', r: [0, extent], z: [-170, -0.5], material: 'rigid', label: '배플' }],
+    drivers: [{ kind: 'piston', z: 0, r: [0, a], dir: '+z', label: '피스톤' }],
   };
 }
 
@@ -53,9 +53,9 @@ export function sideRadialScene(p: Partial<SideRadialParams> = {}): Scene {
   const q = { ...SIDE_RADIAL_DEFAULTS, ...p };
   const R = q.housingR;
   const shapes: Scene['shapes'] = [
-    { kind: 'rect', r: [R - q.wall, R], z: [0, q.height], material: 'rigid', role: 'housing', label: 'side wall' },
-    { kind: 'rect', r: [0, R], z: [0, q.wall], material: 'rigid', role: 'housing', label: 'bottom' },
-    { kind: 'rect', r: [0, R], z: [q.height - q.wall, q.height], material: 'rigid', role: 'housing', label: 'top' },
+    { kind: 'rect', r: [R - q.wall, R], z: [0, q.height], material: 'rigid', role: 'housing', label: '측벽' },
+    { kind: 'rect', r: [0, R], z: [0, q.wall], material: 'rigid', role: 'housing', label: '바닥판' },
+    { kind: 'rect', r: [0, R], z: [q.height - q.wall, q.height], material: 'rigid', role: 'housing', label: '상판' },
     {
       kind: 'polygon',
       points: q.reflectorProfile
@@ -63,16 +63,16 @@ export function sideRadialScene(p: Partial<SideRadialParams> = {}): Scene {
         : [[0, q.coneApexZ], [q.coneBaseR, q.coneBaseZ], [0, q.coneBaseZ]],
       material: 'rigid',
       role: 'reflector',
-      label: q.reflectorProfile ? 'reflector profile' : 'reflector cone',
+      label: q.reflectorProfile ? '리플렉터 프로파일' : '원뿔 리플렉터',
     },
     // Cut 2 mm past both wall faces so the slot stays open on coarse grids (a 1.5 mm wall
     // rasterises to two cells at dx >= 2 mm; a cut the width of the wall would leave one closed).
-    { kind: 'rect', r: [R - q.wall - 2, R + 2], z: q.slotZ, material: 'air', role: 'slot', label: 'side slot' },
+    { kind: 'rect', r: [R - q.wall - 2, R + 2], z: q.slotZ, material: 'air', role: 'slot', label: '측면 슬롯' },
   ];
   if (q.fabric) {
     shapes.push({
       kind: 'rect', r: [R, R + 1], z: [q.slotZ[0] - 1, q.slotZ[1] + 1],
-      material: 'fabric', role: 'fabric', sigma: q.fabricSigma, label: 'fabric',
+      material: 'fabric', role: 'fabric', sigma: q.fabricSigma, label: '패브릭',
     });
   }
   return {
@@ -81,7 +81,7 @@ export function sideRadialScene(p: Partial<SideRadialParams> = {}): Scene {
     domain: { rMax: 290, zMin: -250, zMax: 310 },
     measure: { radius: 120, zCenter: 30, angleStep: 5 },
     shapes,
-    drivers: [{ kind: 'piston', z: q.driverZ, r: [0, q.driverR], dir: '-z', label: 'driver' }],
+    drivers: [{ kind: 'piston', z: q.driverZ, r: [0, q.driverR], dir: '-z', label: '드라이버' }],
   };
 }
 
@@ -94,11 +94,11 @@ export function frontFiringScene(): Scene {
     domain: { rMax: 290, zMin: -250, zMax: 310 },
     measure: { radius: 120, zCenter: H, angleStep: 5 },
     shapes: [
-      { kind: 'rect', r: [R - wall, R], z: [0, H], material: 'rigid', label: 'side wall' },
-      { kind: 'rect', r: [0, R], z: [0, wall], material: 'rigid', label: 'bottom' },
-      { kind: 'rect', r: [20, R], z: [H - wall, H], material: 'rigid', label: 'top plate' },
+      { kind: 'rect', r: [R - wall, R], z: [0, H], material: 'rigid', label: '측벽' },
+      { kind: 'rect', r: [0, R], z: [0, wall], material: 'rigid', label: '바닥판' },
+      { kind: 'rect', r: [20, R], z: [H - wall, H], material: 'rigid', label: '상판' },
     ],
-    drivers: [{ kind: 'piston', z: H, r: [0, 20], dir: '+z', label: 'driver' }],
+    drivers: [{ kind: 'piston', z: H, r: [0, 20], dir: '+z', label: '드라이버' }],
   };
 }
 
@@ -111,12 +111,12 @@ export function upFiring360Scene(): Scene {
     domain: { rMax: 290, zMin: -250, zMax: 310 },
     measure: { radius: 120, zCenter: H + 15, angleStep: 5 },
     shapes: [
-      { kind: 'rect', r: [R - wall, R], z: [0, H], material: 'rigid', label: 'side wall' },
-      { kind: 'rect', r: [0, R], z: [0, wall], material: 'rigid', label: 'bottom' },
-      { kind: 'rect', r: [20, R], z: [H - wall, H], material: 'rigid', label: 'top plate' },
-      { kind: 'polygon', points: [[0, H + 12], [R, H + 32], [0, H + 32]], material: 'rigid', role: 'reflector', label: 'reflector' },
+      { kind: 'rect', r: [R - wall, R], z: [0, H], material: 'rigid', label: '측벽' },
+      { kind: 'rect', r: [0, R], z: [0, wall], material: 'rigid', label: '바닥판' },
+      { kind: 'rect', r: [20, R], z: [H - wall, H], material: 'rigid', label: '상판' },
+      { kind: 'polygon', points: [[0, H + 12], [R, H + 32], [0, H + 32]], material: 'rigid', role: 'reflector', label: '리플렉터' },
     ],
-    drivers: [{ kind: 'piston', z: H, r: [0, 20], dir: '+z', label: 'driver' }],
+    drivers: [{ kind: 'piston', z: H, r: [0, 20], dir: '+z', label: '드라이버' }],
   };
 }
 

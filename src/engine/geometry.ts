@@ -312,7 +312,7 @@ export function defaultSlot(scene: Scene, where: BandPlace = 'side', start?: num
   if (where === 'side') b = { r0: R - 6, r1: R + 2, z0: start ?? 3, z1: (start ?? 3) + length, axis: 'z' };
   else if (where === 'top') b = { r0: start ?? 10, r1: (start ?? 10) + length, z0: zt - 6, z1: zt + 2, axis: 'r' };
   else b = { r0: start ?? 10, r1: (start ?? 10) + length, z0: zb - 2, z1: zb + 6, axis: 'r' };
-  return { kind: 'path', nodes: bandNodes(b), material: 'air', role: 'slot', axis: b.axis, label: `slot ${n}` };
+  return { kind: 'path', nodes: bandNodes(b), material: 'air', role: 'slot', axis: b.axis, label: `슬롯 ${n}` };
 }
 
 /** Default fabric layer on the outer side surface or on a top/bottom face. */
@@ -324,7 +324,7 @@ export function defaultFabric(scene: Scene, where: BandPlace = 'side', start?: n
   if (where === 'side') b = { r0: R, r1: R + thickness, z0: start ?? 2, z1: (start ?? 2) + length, axis: 'z' };
   else if (where === 'top') b = { r0: start ?? 9, r1: (start ?? 9) + length, z0: zt, z1: zt + thickness, axis: 'r' };
   else b = { r0: start ?? 9, r1: (start ?? 9) + length, z0: zb - thickness, z1: zb, axis: 'r' };
-  return { kind: 'path', nodes: bandNodes(b), material: 'fabric', role: 'fabric', axis: b.axis, sigma: 2e5, label: `fabric ${n}` };
+  return { kind: 'path', nodes: bandNodes(b), material: 'fabric', role: 'fabric', axis: b.axis, sigma: 2e5, label: `패브릭 ${n}` };
 }
 
 export function materialForRole(role: ShapeRole, current?: Material): Material {
@@ -367,6 +367,28 @@ export function sceneBounds(scene: Scene) {
   return { r0, r1, z0, z1 };
 }
 
+/**
+ * Grow (never shrink) the simulation domain so the drawn device and a useful
+ * measurement arc fit outside the sponge. Keeping this monotonic preserves a
+ * domain the user deliberately made larger while making imported SVGs safe by
+ * default.
+ */
+export function expandDomainToFit(scene: Scene, spongeMm = 0, boundaryClearance = 60): Scene {
+  const b = sceneBounds(scene);
+  const zCenter = (b.z0 + b.z1) / 2;
+  const dz = Math.max(Math.abs(b.z0 - zCenter), Math.abs(b.z1 - zCenter));
+  const measureRadius = Math.hypot(Math.max(0, b.r1), dz) + 20;
+  const margin = spongeMm + boundaryClearance;
+  return {
+    ...scene,
+    domain: {
+      rMax: Math.ceil(Math.max(scene.domain.rMax, measureRadius + margin) / 10) * 10,
+      zMin: Math.floor(Math.min(scene.domain.zMin, zCenter - measureRadius - margin) / 10) * 10,
+      zMax: Math.ceil(Math.max(scene.domain.zMax, zCenter + measureRadius + margin) / 10) * 10,
+    },
+  };
+}
+
 const label = (s: { label?: string }, k: number, what: string) => (s.label ? `${s.label}` : `${what} ${k}`);
 
 /** Largest measurement angle (multiple of angleStep) whose probe stays >= 1 mm above the floor. */
@@ -378,6 +400,28 @@ export function maxAngleAboveFloor(scene: Scene): number {
   if (c <= -1) return 180;
   const th = (Math.acos(c) * 180) / Math.PI;
   return Math.max(angleStep, Math.floor(th / angleStep) * angleStep);
+}
+
+/**
+ * Place the measurement arc outside the drawn device while keeping it clear of
+ * the absorbing boundary. The axis stays at r=0; a floor limits the sampled
+ * half-space instead of moving probes below it.
+ */
+export function fitMeasurementArc(scene: Scene, spongeMm = 0, boundaryClearance = 60): Scene['measure'] {
+  const b = sceneBounds(scene);
+  const zCenter = (b.z0 + b.z1) / 2;
+  const dz = Math.max(Math.abs(b.z0 - zCenter), Math.abs(b.z1 - zCenter));
+  const desired = Math.hypot(Math.max(0, b.r1), dz) + 20;
+  const usableR = scene.domain.rMax - spongeMm - boundaryClearance;
+  const usableTop = scene.domain.zMax - spongeMm - boundaryClearance - zCenter;
+  const usableBottom = zCenter - (scene.domain.zMin + spongeMm + boundaryClearance);
+  const available = scene.floor?.enabled
+    ? Math.min(usableR, usableTop)
+    : Math.min(usableR, usableTop, usableBottom);
+  const radius = Math.max(5, Math.round(Math.min(desired, Math.max(5, available))));
+  const measure = { ...scene.measure, radius, zCenter, angleMax: 180 };
+  if (!scene.floor?.enabled) return measure;
+  return { ...measure, angleMax: maxAngleAboveFloor({ ...scene, measure }) };
 }
 
 /**

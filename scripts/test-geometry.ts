@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   polygonSelfIntersection, polygonArea, polygonsOverlap, normalizeScene, checkGeometry, asAxisAlignedRect,
-  bezierPoint, flattenPath, splitSegment, smoothNode, isSmoothNode, shapeToPath, FLATTEN_STEP, type Pt,
+  bezierPoint, expandDomainToFit, fitMeasurementArc, flattenPath, splitSegment, smoothNode, isSmoothNode, shapeToPath, FLATTEN_STEP, type Pt,
 } from '../src/engine/geometry';
 import { parsePathD, sceneToSvg } from '../src/engine/svg';
 import type { PathNode } from '../src/engine/scene';
@@ -173,6 +173,25 @@ async function main() {
     s.measure.angleMax = am;
     assert.ok(!cg(s).some((d) => d.code === 'probe-below-floor'));
   });
+  await test('measurement auto-fit encloses geometry, avoids sponge, and follows the floor', () => {
+    const s = normalizeScene(sideRadialScene());
+    s.measure = fitMeasurementArc(s, 100);
+    assert.ok(s.measure.radius > 50 && s.measure.radius < 130, `fitted radius ${s.measure.radius}`);
+    assert.ok(!diagnose(s, DEFAULT_PARAMS).some((d) => d.code === 'probe-in-solid' || d.code === 'probe-in-sponge'));
+    s.floor = { enabled: true, z: 0 };
+    s.measure = fitMeasurementArc(s, 100);
+    assert.ok((s.measure.angleMax ?? 180) < 180, `floor angle ${s.measure.angleMax}`);
+    assert.ok(!checkGeometry(s).some((d) => d.code === 'probe-below-floor'));
+  });
+  await test('analysis domain expands for imported geometry without shrinking user space', () => {
+    const s = normalizeScene(sideRadialScene());
+    s.shapes.push({ kind: 'rect', r: [0, 420], z: [-80, 180], material: 'rigid', role: 'other' });
+    const fitted = expandDomainToFit(s, 100);
+    fitted.measure = fitMeasurementArc(fitted, 100);
+    assert.ok(fitted.domain.rMax > 600, `expanded rMax ${fitted.domain.rMax}`);
+    assert.ok(fitted.domain.zMin <= s.domain.zMin && fitted.domain.zMax >= s.domain.zMax, 'never shrinks the existing domain');
+    assert.ok(!diagnose(fitted, DEFAULT_PARAMS).some((d) => d.code === 'probe-in-sponge'), 'probe remains outside the sponge');
+  });
   await test('SVG export writes cubic paths that parse back to the same anchors and handles', () => {
     const s = normalizeScene(sideRadialScene());
     const refl = s.shapes.findIndex((x) => x.role === 'reflector');
@@ -180,7 +199,7 @@ async function main() {
     rs.nodes = rs.nodes.map((_, i) => smoothNode(rs.nodes, i));
     s.shapes[refl] = rs;
     const svg = sceneToSvg(s);
-    const d = svg.match(/id="reflector_cone"[^>]*d="([^"]+)"/)?.[1];
+    const d = svg.match(/<path[^>]*data-role="reflector"[^>]*d="([^"]+)"/)?.[1];
     assert.ok(d && d.includes(' C '), 'reflector exported as a cubic path');
     const back = parsePathD(d!)[0];
     assert.equal(back.length, rs.nodes.length);
