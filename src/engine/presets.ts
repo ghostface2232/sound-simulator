@@ -6,10 +6,11 @@ export function pistonBaffleScene(a = 20, extent = 220, measureRadius = 150): Sc
     name: 'piston-baffle',
     description: `반경 ${a}mm 피스톤, 무한 배플. 이론 지향성 2J1(ka sinθ)/(ka sinθ)와 비교용.`,
     // zMin sits well below the baffle so the bottom sponge layer only ever touches solid cells.
-    domain: { rMax: extent, zMin: -130, zMax: extent + 10 },
-    measure: { radius: measureRadius, zCenter: 0, angleStep: 5 },
+    domain: { rMax: extent, zMin: -170, zMax: extent + 10 },
+    // Only the half-space above the baffle is meaningful.
+    measure: { radius: measureRadius, zCenter: 0, angleStep: 5, angleMax: 90 },
     // Baffle top at z = -0.5 so it lands on a cell boundary (dx = 1) flush with the piston face.
-    shapes: [{ kind: 'rect', r: [0, extent], z: [-130, -0.5], material: 'rigid', label: 'baffle' }],
+    shapes: [{ kind: 'rect', r: [0, extent], z: [-170, -0.5], material: 'rigid', label: 'baffle' }],
     drivers: [{ kind: 'piston', z: 0, r: [0, a], dir: '+z', label: 'piston' }],
   };
 }
@@ -70,7 +71,7 @@ export function sideRadialScene(p: Partial<SideRadialParams> = {}): Scene {
   return {
     name: 'side-radial',
     description: '70mm 하우징, 40mm 드라이버 하향 발사, 원뿔 리플렉터, 하단 측면 환형 슬롯 + 패브릭.',
-    domain: { rMax: 260, zMin: -200, zMax: 280 },
+    domain: { rMax: 290, zMin: -250, zMax: 310 },
     measure: { radius: 120, zCenter: 30, angleStep: 5 },
     shapes,
     drivers: [{ kind: 'piston', z: q.driverZ, r: [0, q.driverR], dir: '-z', label: 'driver' }],
@@ -83,7 +84,7 @@ export function frontFiringScene(): Scene {
   return {
     name: 'front-firing',
     description: '70mm 밀폐 원통, 상판에 40mm 드라이버가 정면(+z)으로 방사.',
-    domain: { rMax: 260, zMin: -200, zMax: 280 },
+    domain: { rMax: 290, zMin: -250, zMax: 310 },
     measure: { radius: 120, zCenter: H, angleStep: 5 },
     shapes: [
       { kind: 'rect', r: [R - wall, R], z: [0, H], material: 'rigid', label: 'side wall' },
@@ -100,7 +101,7 @@ export function upFiring360Scene(): Scene {
   return {
     name: 'up-firing-360',
     description: '상향 발사 드라이버 위에 원뿔 리플렉터를 띄워 360° 수평 방사.',
-    domain: { rMax: 260, zMin: -200, zMax: 280 },
+    domain: { rMax: 290, zMin: -250, zMax: 310 },
     measure: { radius: 120, zCenter: H + 15, angleStep: 5 },
     shapes: [
       { kind: 'rect', r: [R - wall, R], z: [0, H], material: 'rigid', label: 'side wall' },

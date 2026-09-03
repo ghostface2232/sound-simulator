@@ -1,7 +1,27 @@
 import { AxiFDTD, gaussianPulse } from './fdtd';
 import { buildGrid, type BuiltGrid } from './rasterize';
 import { analyze, type SimResult } from './analysis';
+import { validateScene, checkSetup, checkDecay, hasErrors, reliableFMin, type Diagnostic } from './checks';
 import type { Scene, SimParams } from './scene';
+
+export class SceneValidationError extends Error {
+  constructor(public readonly diagnostics: Diagnostic[]) {
+    super(
+      diagnostics
+        .filter((d) => d.severity === 'error')
+        .map((d) => `[${d.code}] ${d.message}`)
+        .join('\n'),
+    );
+    this.name = 'SceneValidationError';
+  }
+}
+
+/** All pre-run diagnostics for a (possibly malformed) scene and its parameters. */
+export function diagnose(scene: unknown, params: SimParams): Diagnostic[] {
+  const structural = validateScene(scene);
+  if (hasErrors(structural)) return structural;
+  return [...structural, ...checkSetup(scene as Scene, params)];
+}
 
 export interface RunCallbacks {
   onGrid?: (g: BuiltGrid) => void;
@@ -10,13 +30,28 @@ export interface RunCallbacks {
   shouldStop?: () => boolean;
 }
 
-/** Run a full broadband simulation and return the frequency-domain result. */
+export interface RunOutput {
+  grid: BuiltGrid;
+  result: SimResult;
+  sim: AxiFDTD;
+  /** Pre-run warnings plus post-run checks (decay, signal presence). */
+  warnings: Diagnostic[];
+}
+
+/**
+ * Run a full broadband simulation and return the frequency-domain result.
+ * Throws SceneValidationError if the scene or parameters have errors.
+ */
 export async function runSimulation(
   scene: Scene,
   params: SimParams,
   cb: RunCallbacks = {},
   frameEvery = 20,
-): Promise<{ grid: BuiltGrid; result: SimResult; sim: AxiFDTD } | null> {
+): Promise<RunOutput | null> {
+  const diags = diagnose(scene, params);
+  if (hasErrors(diags)) throw new SceneValidationError(diags);
+  const warnings = diags.filter((d) => d.severity === 'warning');
+
   const grid = buildGrid(scene, params.dx);
   cb.onGrid?.(grid);
 
@@ -38,10 +73,8 @@ export async function runSimulation(
     }
   }
 
-  const result = analyze(
-    hist, src, sim.dt,
-    grid.probes.map((p) => p.angleDeg),
-    100, params.fMax,
-  );
-  return { grid, result, sim };
+  const fMinCut = Math.max(params.fMin, reliableFMin(scene, params.durationMs));
+  const result = analyze(hist, src, sim.dt, grid.probes.map((p) => p.angleDeg), fMinCut, params.fMax);
+  warnings.push(...checkDecay(hist));
+  return { grid, result, sim, warnings };
 }

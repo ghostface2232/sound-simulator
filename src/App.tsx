@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_PARAMS, type Scene, type SimParams } from './engine/scene';
 import { PRESETS } from './engine/presets';
 import type { SimResult } from './engine/analysis';
+import { hasErrors, type Diagnostic } from './engine/checks';
+import { diagnose } from './engine/runner';
 import type { WorkerIn, WorkerOut } from './worker/sim.worker';
 import { FieldView, type GridInfo } from './ui/FieldView';
 import { PolarChart } from './ui/PolarChart';
@@ -9,10 +11,23 @@ import { ResponseChart } from './ui/ResponseChart';
 
 type Status = 'idle' | 'running' | 'done' | 'error';
 
+function DiagnosticList({ items }: { items: Diagnostic[] }) {
+  if (items.length === 0) return null;
+  return (
+    <ul className="diag">
+      {items.map((d, i) => (
+        <li key={`${d.code}-${i}`} className={`diag-${d.severity}`}>
+          <span className="diag-code">{d.severity === 'error' ? '오류' : d.severity === 'warning' ? '경고' : '정보'}</span>
+          {d.message}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function App() {
   const [presetKey, setPresetKey] = useState<string>('side-radial');
   const [sceneText, setSceneText] = useState<string>(() => JSON.stringify(PRESETS['side-radial'](), null, 2));
-  const [sceneError, setSceneError] = useState<string | null>(null);
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS);
   const [status, setStatus] = useState<Status>('idle');
   const [message, setMessage] = useState<string>('');
@@ -20,6 +35,7 @@ export default function App() {
   const [frame, setFrame] = useState<Float32Array | null>(null);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<SimResult | null>(null);
+  const [runWarnings, setRunWarnings] = useState<Diagnostic[]>([]);
   const [polarFreq, setPolarFreq] = useState(5000);
   const [colorScale, setColorScale] = useState(0.05);
 
@@ -44,9 +60,10 @@ export default function App() {
           break;
         }
         case 'done':
-          setResult({ freqs: m.freqs, angles: m.angles, db: m.db, dt: m.dt, nSteps: m.nSteps });
+          setResult({ freqs: m.freqs, angles: m.angles, db: m.db, dt: m.dt, nSteps: m.nSteps, fMinReliable: m.fMinReliable });
+          setRunWarnings(m.warnings);
           setStatus('done'); setProgress(1);
-          setMessage(`완료: ${m.nSteps} 스텝, ${(m.elapsedMs / 1000).toFixed(1)} s`);
+          setMessage(`완료: ${m.nSteps} 스텝, ${(m.elapsedMs / 1000).toFixed(1)} s · 표시 대역 ${Math.round(m.fMinReliable)} Hz 이상`);
           break;
         case 'stopped':
           setStatus('idle'); setMessage('중단됨');
@@ -60,35 +77,45 @@ export default function App() {
     return () => w.terminate();
   }, []);
 
-  const parsedScene = useMemo<Scene | null>(() => {
+  /** JSON parse result; `null` scene means the text is not valid JSON. */
+  const parsed = useMemo<{ scene: unknown; jsonError: string | null }>(() => {
     try {
-      const s = JSON.parse(sceneText) as Scene;
-      setSceneError(null);
-      return s;
+      return { scene: JSON.parse(sceneText), jsonError: null };
     } catch (err) {
-      setSceneError(err instanceof Error ? err.message : String(err));
-      return null;
+      return { scene: null, jsonError: err instanceof Error ? err.message : String(err) };
     }
   }, [sceneText]);
+
+  const diagnostics = useMemo<Diagnostic[]>(() => {
+    if (parsed.jsonError) return [{ severity: 'error', code: 'json', message: `JSON 파싱 오류: ${parsed.jsonError}` }];
+    return diagnose(parsed.scene, params);
+  }, [parsed, params]);
+  const blocked = hasErrors(diagnostics);
 
   const loadPreset = useCallback((key: string) => {
     setPresetKey(key);
     setSceneText(JSON.stringify(PRESETS[key](), null, 2));
-    setResult(null); setFrame(null); setGrid(null);
+    setResult(null); setFrame(null); setGrid(null); setRunWarnings([]);
   }, []);
 
   const run = useCallback(() => {
-    if (!parsedScene || !workerRef.current) return;
-    setStatus('running'); setMessage(''); setResult(null); setProgress(0);
-    const msg: WorkerIn = { type: 'run', scene: parsedScene, params, frameEvery: 25 };
+    if (blocked || !workerRef.current) return;
+    setStatus('running'); setMessage(''); setResult(null); setProgress(0); setRunWarnings([]);
+    // diagnose() has already confirmed the structure, so the cast is safe here.
+    const msg: WorkerIn = { type: 'run', scene: parsed.scene as Scene, params, frameEvery: 25 };
     workerRef.current.postMessage(msg);
-  }, [parsedScene, params]);
+  }, [blocked, parsed, params]);
 
   const stop = useCallback(() => {
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
   }, []);
 
+  const setNum = (key: keyof SimParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setParams({ ...params, [key]: +e.target.value });
+
   const cells = grid ? grid.Nr * grid.Nz : 0;
+  const chartFMin = result ? result.freqs[0] : params.fMin;
+  const description = (parsed.scene as { description?: string } | null)?.description;
 
   return (
     <div className="app">
@@ -100,29 +127,31 @@ export default function App() {
             {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
           </select>
         </label>
-        {parsedScene?.description && <p className="desc">{parsedScene.description}</p>}
+        {description && <p className="desc">{description}</p>}
 
         <div className="grid2">
           <label>dx (mm)
-            <input type="number" step="0.25" min="0.25" max="4" value={params.dx}
-              onChange={(e) => setParams({ ...params, dx: +e.target.value })} />
+            <input type="number" step="0.25" min="0.25" max="4" value={params.dx} onChange={setNum('dx')} />
           </label>
           <label>시간 (ms)
-            <input type="number" step="1" min="1" max="40" value={params.durationMs}
-              onChange={(e) => setParams({ ...params, durationMs: +e.target.value })} />
+            <input type="number" step="1" min="1" max="40" value={params.durationMs} onChange={setNum('durationMs')} />
+          </label>
+          <label>fMin (Hz)
+            <input type="number" step="50" min="20" max="5000" value={params.fMin} onChange={setNum('fMin')} />
           </label>
           <label>fMax (Hz)
-            <input type="number" step="1000" min="2000" max="40000" value={params.fMax}
-              onChange={(e) => setParams({ ...params, fMax: +e.target.value })} />
+            <input type="number" step="1000" min="2000" max="40000" value={params.fMax} onChange={setNum('fMax')} />
           </label>
           <label>흡수층 (cells)
-            <input type="number" step="10" min="10" max="150" value={params.spongeCells}
-              onChange={(e) => setParams({ ...params, spongeCells: +e.target.value })} />
+            <input type="number" step="10" min="10" max="150" value={params.spongeCells} onChange={setNum('spongeCells')} />
           </label>
         </div>
 
+        <DiagnosticList items={diagnostics} />
+
         <div className="row">
-          <button className="primary" onClick={run} disabled={status === 'running' || !parsedScene}>실행</button>
+          <button className="primary" onClick={run} disabled={status === 'running' || blocked}
+            title={blocked ? '오류를 먼저 해결하세요' : undefined}>실행</button>
           <button onClick={stop} disabled={status !== 'running'}>중단</button>
         </div>
         <div className="progress"><div style={{ width: `${progress * 100}%` }} /></div>
@@ -130,11 +159,11 @@ export default function App() {
           {status === 'running' ? `계산 중 ${(progress * 100).toFixed(0)}%` : message}
           {cells > 0 && <span className="muted"> · {grid!.Nr}×{grid!.Nz} = {cells.toLocaleString()} cells</span>}
         </p>
+        {status === 'done' && <DiagnosticList items={runWarnings} />}
 
         <label className="grow">씬 JSON (mm, r-z 단면)
           <textarea value={sceneText} onChange={(e) => setSceneText(e.target.value)} spellCheck={false} />
         </label>
-        {sceneError && <p className="error">{sceneError}</p>}
       </aside>
 
       <main className="center">
@@ -143,15 +172,18 @@ export default function App() {
 
       <aside className="panel right">
         <h2>지향성 <span className="sub">{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}</span></h2>
-        <input type="range" min={Math.log10(200)} max={Math.log10(params.fMax)} step={0.01}
-          value={Math.log10(polarFreq)}
+        <input type="range" min={Math.log10(chartFMin)} max={Math.log10(params.fMax)} step={0.01}
+          value={Math.log10(Math.max(polarFreq, chartFMin))}
           onChange={(e) => setPolarFreq(Math.round(10 ** +e.target.value / 50) * 50)} />
         <div className="chart polar"><PolarChart result={result} freq={polarFreq} /></div>
 
         <h2>주파수 응답 <span className="sub">dB, 상대값</span></h2>
-        <div className="chart response"><ResponseChart result={result} angles={[0, 45, 90, 135, 180]} fMin={200} fMax={params.fMax} /></div>
+        <div className="chart response">
+          <ResponseChart result={result} angles={[0, 45, 90, 135, 180]} fMin={chartFMin} fMax={params.fMax} />
+        </div>
         <p className="muted small">
           0° = +z(위), 90° = 측면, 180° = 아래. 절대 SPL은 드라이버 데이터가 있어야 하므로 지금은 상대 dB입니다.
+          {result && ` 표시 하한 ${Math.round(result.fMinReliable)} Hz는 해석 시간으로 결정됩니다.`}
         </p>
       </aside>
     </div>

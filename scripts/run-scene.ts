@@ -19,7 +19,8 @@ async function main() {
     },
   }, 100);
   if (!out) return;
-  const { sim, result, grid } = out;
+  const { sim, result, grid, warnings } = out;
+  for (const w of warnings) console.log(`warning [${w.code}] ${w.message}`);
   let pmax = 0; for (let i = 0; i < sim.p.length; i++) pmax = Math.max(pmax, Math.abs(sim.p[i]));
   console.log(`grid ${sim.Nr}x${sim.Nz}, steps ${result.nSteps}, src faces ${grid.srcFace.length}, ${((Date.now() - t0) / 1000).toFixed(1)}s, final |p|max ${pmax.toExponential(2)}`);
   for (const f of [1000, 3000, 6000, 10000]) {

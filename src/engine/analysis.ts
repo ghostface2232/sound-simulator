@@ -9,6 +9,8 @@ export interface SimResult {
   db: Float32Array;
   dt: number;
   nSteps: number;
+  /** Lowest frequency kept in `freqs` (max of the user's fMin and what the run length resolves). */
+  fMinReliable: number;
 }
 
 /**
@@ -43,7 +45,7 @@ export function analyze(
     }
   }
 
-  return { freqs, angles: Float32Array.from(angles), db, dt, nSteps };
+  return { freqs, angles: Float32Array.from(angles), db, dt, nSteps, fMinReliable: fMin };
 }
 
 /** Index of the frequency bin closest to f. */

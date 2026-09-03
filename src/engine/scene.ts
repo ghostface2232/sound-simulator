@@ -52,8 +52,11 @@ export interface Scene {
   name: string;
   description?: string;
   domain: { rMax: number; zMin: number; zMax: number };
-  /** Measurement arc: centre on the axis at zCenter, angle measured from +z. */
-  measure: { radius: number; zCenter: number; angleStep: number };
+  /**
+   * Measurement arc: centre on the axis at zCenter, angle measured from +z.
+   * angleMax (default 180) limits the arc, e.g. 90 for a half-space baffle case.
+   */
+  measure: { radius: number; zCenter: number; angleStep: number; angleMax?: number };
   shapes: Shape[];
   drivers: Driver[];
 }
@@ -65,6 +68,11 @@ export interface SimParams {
   durationMs: number;
   /** Upper frequency of interest (Hz); sets the source pulse width. */
   fMax: number;
+  /**
+   * Lowest frequency the user wants to see (Hz). The spectrum is cut at the
+   * larger of this and what the run length can actually resolve.
+   */
+  fMin: number;
   /** Absorbing layer thickness in cells. */
   spongeCells: number;
   /** Peak per-step damping fraction at the outer edge of the sponge. */
@@ -77,6 +85,8 @@ export const DEFAULT_PARAMS: SimParams = {
   dx: 1,
   durationMs: 6,
   fMax: 20000,
+  // 6 ms minus the arrival delay resolves ~530 Hz; 500 Hz keeps the default run warning-free.
+  fMin: 500,
   spongeCells: 100,
   spongeMax: 0.05,
   courant: 0.45,

@@ -157,8 +157,8 @@ export function buildGrid(scene: Scene, dx: number): BuiltGrid {
   }
 
   const probes: BuiltGrid['probes'] = [];
-  const { radius, zCenter, angleStep } = scene.measure;
-  for (let a = 0; a <= 180 + 1e-9; a += angleStep) {
+  const { radius, zCenter, angleStep, angleMax = 180 } = scene.measure;
+  for (let a = 0; a <= angleMax + 1e-9; a += angleStep) {
     const th = (a * Math.PI) / 180;
     const r = radius * Math.sin(th);
     const z = zCenter + radius * Math.cos(th);

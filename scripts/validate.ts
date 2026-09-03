@@ -1,12 +1,28 @@
 /**
  * Solver validation: piston of radius a in an infinite rigid baffle.
  * Theory (far field): D(θ) = |2 J1(ka sinθ) / (ka sinθ)|.
- * Run with: npm run validate
+ *
+ *   npm run validate                 # baseline dx = 1 mm + grid-convergence sweep
+ *   npx tsx scripts/validate.ts 0.75 # baseline at another dx (convergence sweep still runs)
+ *   npx tsx scripts/validate.ts 1 --no-convergence
+ *
+ * Exits with code 1 when any criterion fails.
  */
 import { runSimulation } from '../src/engine/runner';
 import { pistonBaffleScene } from '../src/engine/presets';
 import { polarAt } from '../src/engine/analysis';
 import { C_AIR } from '../src/engine/fdtd';
+import { DEFAULT_PARAMS } from '../src/engine/scene';
+
+const A_MM = 20;
+const EXTENT_MM = 320;
+const MEASURE_MM = 150;
+const SPONGE_MM = 100;
+const FREQS = [3000, 6000, 10000, 15000];
+const MAX_ANGLE = 60;
+const NULL_FLOOR_DB = -20; // points deeper than this are inside a null and not judged
+const BASELINE_TOL_DB = 0.75;
+const CONVERGENCE_TOL_DB = 0.6;
 
 function besselJ1(x: number): number {
   const ax = Math.abs(x);
@@ -26,50 +42,101 @@ function besselJ1(x: number): number {
   return ans;
 }
 
-function theoryDb(thetaDeg: number, a: number, f: number): number {
+function theoryDb(thetaDeg: number, aM: number, f: number): number {
   const k = (2 * Math.PI * f) / C_AIR;
-  const x = k * a * Math.sin((thetaDeg * Math.PI) / 180);
+  const x = k * aM * Math.sin((thetaDeg * Math.PI) / 180);
   const d = Math.abs(x) < 1e-6 ? 1 : Math.abs((2 * besselJ1(x)) / x);
   return 20 * Math.log10(d + 1e-12);
 }
 
-async function main() {
-  const a = 20; // mm
-  // args: dx extent measureRadius spongeCells spongeMax
-  const dx = Number(process.argv[2] ?? 1);
-  const extent = Number(process.argv[3] ?? 320);
-  const measureRadius = Number(process.argv[4] ?? 150);
-  const spongeCells = Number(process.argv[5] ?? 100);
-  const spongeMax = Number(process.argv[6] ?? 0.05);
-  console.log({ dx, extent, measureRadius, spongeCells, spongeMax });
-  const scene = pistonBaffleScene(a, extent, measureRadius);
+interface CaseResult {
+  dx: number;
+  seconds: number;
+  cells: string;
+  /** Simulated normalised directivity in dB, keyed by `${f}:${theta}`. */
+  pattern: Map<string, number>;
+  worstErr: number;
+}
+
+async function runCase(dx: number): Promise<CaseResult> {
+  const scene = pistonBaffleScene(A_MM, EXTENT_MM, MEASURE_MM);
+  const spongeCells = Math.round(SPONGE_MM / dx);
   const t0 = Date.now();
-  const out = await runSimulation(scene, { dx, durationMs: 4, fMax: 20000, spongeCells, spongeMax, courant: 0.45 }, {}, 1e9);
+  const out = await runSimulation(scene, { ...DEFAULT_PARAMS, dx, durationMs: 4, fMin: 1000, spongeCells }, {}, 1e9);
   if (!out) throw new Error('stopped');
-  const { result, sim } = out;
-  console.log(`grid ${sim.Nr}x${sim.Nz}, dt=${(sim.dt * 1e6).toFixed(2)} us, steps=${result.nSteps}, ${(Date.now() - t0) / 1000}s`);
+  const { result, sim, warnings } = out;
+  for (const w of warnings) if (w.code !== 'fmin-unreliable') console.log(`  warning [${w.code}] ${w.message}`);
 
   let pmax = 0;
   for (let i = 0; i < sim.p.length; i++) pmax = Math.max(pmax, Math.abs(sim.p[i]));
-  console.log(`final |p|max = ${pmax.toExponential(2)} (should be small and finite)`);
+  if (!Number.isFinite(pmax)) throw new Error('solver blew up (non-finite pressure)');
 
-  let worst = 0;
-  for (const f of [3000, 6000, 10000, 15000]) {
+  const pattern = new Map<string, number>();
+  let worstErr = 0;
+  for (const f of FREQS) {
     const { angles, db } = polarAt(result, f);
-    console.log(`\nf = ${f} Hz  (ka = ${((2 * Math.PI * f * a) / 1000 / C_AIR).toFixed(2)})`);
-    console.log('  θ    sim     theory   err');
     for (let k = 0; k < angles.length; k++) {
       const th = angles[k];
-      if (th > 60 || th % 10 !== 0) continue;
-      const t = theoryDb(th, a / 1000, f);
-      const err = db[k] - t;
-      // Ignore points deeper than -20 dB (nulls are sensitive to tiny errors).
-      if (t > -20) worst = Math.max(worst, Math.abs(err));
-      console.log(`  ${String(th).padStart(3)}  ${db[k].toFixed(2).padStart(6)}  ${t.toFixed(2).padStart(7)}  ${err.toFixed(2).padStart(6)}`);
+      if (th > MAX_ANGLE) continue;
+      pattern.set(`${f}:${th}`, db[k]);
+      const t = theoryDb(th, A_MM / 1000, f);
+      if (t > NULL_FLOOR_DB) worstErr = Math.max(worstErr, Math.abs(db[k] - t));
     }
   }
-  console.log(`\nworst |error| above -20 dB, θ ≤ 60°: ${worst.toFixed(2)} dB`);
-  console.log(worst < 1.5 ? 'PASS' : 'FAIL');
+  return { dx, seconds: (Date.now() - t0) / 1000, cells: `${sim.Nr}x${sim.Nz}`, pattern, worstErr };
+}
+
+function printTable(c: CaseResult) {
+  for (const f of FREQS) {
+    console.log(`\nf = ${f} Hz  (ka = ${((2 * Math.PI * f * A_MM) / 1000 / C_AIR).toFixed(2)})`);
+    console.log('  θ    sim     theory   err');
+    for (let th = 0; th <= MAX_ANGLE; th += 10) {
+      const s = c.pattern.get(`${f}:${th}`)!;
+      const t = theoryDb(th, A_MM / 1000, f);
+      console.log(`  ${String(th).padStart(3)}  ${s.toFixed(2).padStart(6)}  ${t.toFixed(2).padStart(7)}  ${(s - t).toFixed(2).padStart(6)}`);
+    }
+  }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const baseDx = Number(args.find((a) => !a.startsWith('--')) ?? 1);
+  const doConvergence = !args.includes('--no-convergence');
+  let ok = true;
+
+  console.log(`baseline: dx = ${baseDx} mm, a = ${A_MM} mm, measure r = ${MEASURE_MM} mm, sponge ${SPONGE_MM} mm`);
+  const base = await runCase(baseDx);
+  console.log(`grid ${base.cells}, ${base.seconds.toFixed(1)} s`);
+  printTable(base);
+  console.log(`\nworst |error| above ${NULL_FLOOR_DB} dB, θ ≤ ${MAX_ANGLE}°: ${base.worstErr.toFixed(2)} dB (tolerance ${BASELINE_TOL_DB})`);
+  if (base.worstErr > BASELINE_TOL_DB) { ok = false; console.log('  -> baseline FAIL'); }
+
+  if (doConvergence) {
+    console.log('\nconvergence sweep');
+    const dxs = [2, 1.5, 1];
+    const cases: CaseResult[] = [];
+    for (const dx of dxs) {
+      const c = dx === baseDx ? base : await runCase(dx);
+      cases.push(c);
+      console.log(`  dx = ${dx.toFixed(2).padStart(4)} mm  grid ${c.cells.padEnd(9)} ${c.seconds.toFixed(1).padStart(5)} s  worst err ${c.worstErr.toFixed(2)} dB`);
+    }
+    // Error must not grow as the grid is refined, and the two finest grids must agree.
+    const errs = cases.map((c) => c.worstErr);
+    if (errs[errs.length - 1] > errs[0] + 0.1) { ok = false; console.log('  -> FAIL: error grows with refinement'); }
+    const a = cases[cases.length - 2], b = cases[cases.length - 1];
+    let maxDiff = 0;
+    for (const [key, v] of b.pattern) {
+      const [fStr, thStr] = key.split(':');
+      const t = theoryDb(Number(thStr), A_MM / 1000, Number(fStr));
+      if (t <= NULL_FLOOR_DB) continue;
+      maxDiff = Math.max(maxDiff, Math.abs(v - (a.pattern.get(key) ?? v)));
+    }
+    console.log(`  max |Δ| between dx ${a.dx} and ${b.dx}: ${maxDiff.toFixed(2)} dB (tolerance ${CONVERGENCE_TOL_DB})`);
+    if (maxDiff > CONVERGENCE_TOL_DB) { ok = false; console.log('  -> FAIL: not converged'); }
+  }
+
+  console.log(ok ? '\nPASS' : '\nFAIL');
+  process.exit(ok ? 0 : 1);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

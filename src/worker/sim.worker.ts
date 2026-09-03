@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import { runSimulation } from '../engine/runner';
+import type { Diagnostic } from '../engine/checks';
 import type { Scene, SimParams } from '../engine/scene';
 
 export type WorkerIn =
@@ -9,7 +10,7 @@ export type WorkerIn =
 export type WorkerOut =
   | { type: 'grid'; Nr: number; Nz: number; dx: number; zMin: number; solid: Uint8Array; sigma: Float32Array; probes: { fr: number; fz: number; angleDeg: number }[] }
   | { type: 'frame'; step: number; nSteps: number; p: Float32Array }
-  | { type: 'done'; freqs: Float32Array; angles: Float32Array; db: Float32Array; dt: number; nSteps: number; elapsedMs: number }
+  | { type: 'done'; freqs: Float32Array; angles: Float32Array; db: Float32Array; dt: number; nSteps: number; fMinReliable: number; warnings: Diagnostic[]; elapsedMs: number }
   | { type: 'stopped' }
   | { type: 'error'; message: string };
 
@@ -40,11 +41,12 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
     }, msg.frameEvery);
 
     if (!out) { post({ type: 'stopped' }); return; }
-    const { result } = out;
+    const { result, warnings } = out;
     post({
       type: 'done',
       freqs: result.freqs, angles: result.angles, db: result.db,
-      dt: result.dt, nSteps: result.nSteps, elapsedMs: performance.now() - t0,
+      dt: result.dt, nSteps: result.nSteps, fMinReliable: result.fMinReliable,
+      warnings, elapsedMs: performance.now() - t0,
     });
   } catch (err) {
     post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
