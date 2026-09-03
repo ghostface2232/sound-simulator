@@ -4,6 +4,7 @@ import { buildGrid, type BuiltGrid } from './rasterize';
 import { analyze, type SimResult } from './analysis';
 import { validateScene, checkSetup, checkDecay, hasErrors, reliableFMin, type Diagnostic } from './checks';
 import type { Scene, SimParams } from './scene';
+import { checkGeometry } from './geometry';
 
 export type BackendUsed = 'cpu' | 'gpu';
 
@@ -23,7 +24,7 @@ export class SceneValidationError extends Error {
 export function diagnose(scene: unknown, params: SimParams): Diagnostic[] {
   const structural = validateScene(scene);
   if (hasErrors(structural)) return structural;
-  return [...structural, ...checkSetup(scene as Scene, params)];
+  return [...structural, ...checkGeometry(scene as Scene), ...checkSetup(scene as Scene, params)];
 }
 
 export interface RunCallbacks {

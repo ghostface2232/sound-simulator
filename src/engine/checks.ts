@@ -12,6 +12,10 @@ export interface Diagnostic {
   /** Stable machine-readable code, e.g. 'probe-in-sponge'. */
   code: string;
   message: string;
+  /** Element the diagnostic is about, for highlighting in the editor. */
+  target?: { kind: 'shape' | 'driver' | 'measure' | 'domain'; index: number };
+  /** A point (r, z in mm) to mark on the canvas. */
+  point?: [number, number];
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -68,7 +72,6 @@ export function probeSpongeClearance(scene: Scene, params: SimParams): number {
 export function validateScene(input: unknown): Diagnostic[] {
   const out: Diagnostic[] = [];
   const err = (code: string, message: string) => out.push({ severity: 'error', code, message });
-  const warn = (code: string, message: string) => out.push({ severity: 'warning', code, message });
 
   if (!input || typeof input !== 'object') { err('scene-type', '씬은 객체여야 합니다.'); return out; }
   const s = input as Record<string, unknown>;
@@ -103,7 +106,7 @@ export function validateScene(input: unknown): Diagnostic[] {
         if (!inDomain(m.radius * Math.sin(th), m.zCenter + m.radius * Math.cos(th))) bad.push(a);
       }
       if (bad.length) {
-        err('probe-outside', `측정점이 도메인 밖에 있습니다: θ = ${bad.slice(0, 6).join(', ')}${bad.length > 6 ? ' …' : ''}°`);
+        out.push({ severity: 'error', code: 'probe-outside', target: { kind: 'measure', index: 0 }, message: `측정점이 도메인 밖에 있습니다: θ = ${bad.slice(0, 6).join(', ')}${bad.length > 6 ? ' …' : ''}°` });
       }
     }
   }
@@ -113,6 +116,8 @@ export function validateScene(input: unknown): Diagnostic[] {
     s.shapes.forEach((sh: unknown, k: number) => {
       const x = sh as Record<string, unknown>;
       const tag = `shapes[${k}]${typeof x?.label === 'string' ? ` (${x.label})` : ''}`;
+      const err = (code: string, message: string) => out.push({ severity: 'error', code, message, target: { kind: 'shape', index: k } });
+      const warn = (code: string, message: string) => out.push({ severity: 'warning', code, message, target: { kind: 'shape', index: k } });
       if (!x || typeof x !== 'object') { err('shape-type', `${tag}: 객체여야 합니다.`); return; }
       if (!['rigid', 'fabric', 'air'].includes(x.material as string)) {
         err('shape-material', `${tag}: material 은 rigid/fabric/air 중 하나여야 합니다.`);
@@ -147,6 +152,7 @@ export function validateScene(input: unknown): Diagnostic[] {
     s.drivers.forEach((dr: unknown, k: number) => {
       const x = dr as Record<string, unknown>;
       const tag = `drivers[${k}]${typeof x?.label === 'string' ? ` (${x.label})` : ''}`;
+      const err = (code: string, message: string) => out.push({ severity: 'error', code, message, target: { kind: 'driver', index: k } });
       if (!x || typeof x !== 'object') { err('driver-type', `${tag}: 객체여야 합니다.`); return; }
       if (x.kind === 'piston') {
         if (!isNum(x.z) || !isPair(x.r)) { err('piston-type', `${tag}: z 는 숫자, r 은 [min, max] 쌍이어야 합니다.`); return; }

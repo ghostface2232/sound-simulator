@@ -1,4 +1,5 @@
 import type { Scene, Shape } from './scene';
+import { pointInPolygon, polygonBounds, asAxisAlignedRect } from './geometry';
 
 /** Grid data produced from a Scene, ready for the solver. */
 export interface BuiltGrid {
@@ -20,25 +21,6 @@ export interface BuiltGrid {
   probes: { fr: number; fz: number; angleDeg: number }[];
 }
 
-function pointInPolygon(r: number, z: number, pts: [number, number][]): boolean {
-  let inside = false;
-  for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
-    const [ra, za] = pts[a];
-    const [rb, zb] = pts[b];
-    if (za > z !== zb > z && r < ((rb - ra) * (z - za)) / (zb - za) + ra) inside = !inside;
-  }
-  return inside;
-}
-
-function polygonBounds(pts: [number, number][]) {
-  let r0 = Infinity, r1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  for (const [r, z] of pts) {
-    if (r < r0) r0 = r; if (r > r1) r1 = r;
-    if (z < z0) z0 = z; if (z > z1) z1 = z;
-  }
-  return { r0, r1, z0, z1 };
-}
-
 /**
  * Rasterise a shape. Rigid/fabric shapes mark every cell they overlap
  * (so walls thinner than dx still exist); air cut-outs use the cell
@@ -52,12 +34,12 @@ function rasterShape(
   const conservative = s.material !== 'air';
   const half = conservative ? dx * 0.5 : 0;
 
-  let b: { r0: number; r1: number; z0: number; z1: number };
-  if (s.kind === 'rect') {
-    b = { r0: Math.min(...s.r), r1: Math.max(...s.r), z0: Math.min(...s.z), z1: Math.max(...s.z) };
-  } else {
-    b = polygonBounds(s.points);
-  }
+  // Axis-aligned polygons (the editor form of a rect) take the exact rect path so both forms rasterise identically.
+  const rectBounds = s.kind === 'rect'
+    ? { r0: Math.min(...s.r), r1: Math.max(...s.r), z0: Math.min(...s.z), z1: Math.max(...s.z) }
+    : asAxisAlignedRect(s.points);
+  const b = rectBounds ?? polygonBounds((s as { points: [number, number][] }).points);
+  const asRect = rectBounds !== null;
 
   const i0 = Math.max(0, Math.floor((b.r0 - half) / dx));
   const i1 = Math.min(Nr - 1, Math.ceil((b.r1 + half) / dx));
@@ -69,18 +51,15 @@ function rasterShape(
     for (let i = i0; i <= i1; i++) {
       const r = i * dx;
       let hit: boolean;
-      if (s.kind === 'rect') {
+      if (asRect) {
         hit = r + half > b.r0 && r - half < b.r1 && z + half > b.z0 && z - half < b.z1;
-      } else if (conservative) {
-        // Centre test plus the four cell corners.
-        hit =
-          pointInPolygon(r, z, s.points) ||
-          pointInPolygon(r - half, z - half, s.points) ||
-          pointInPolygon(r + half, z - half, s.points) ||
-          pointInPolygon(r - half, z + half, s.points) ||
-          pointInPolygon(r + half, z + half, s.points);
       } else {
-        hit = pointInPolygon(r, z, s.points);
+        const pts = (s as { points: [number, number][] }).points;
+        hit = conservative
+          ? pointInPolygon(r, z, pts) ||
+            pointInPolygon(r - half, z - half, pts) || pointInPolygon(r + half, z - half, pts) ||
+            pointInPolygon(r - half, z + half, pts) || pointInPolygon(r + half, z + half, pts)
+          : pointInPolygon(r, z, pts);
       }
       if (!hit) continue;
       const c = j * Nr + i;

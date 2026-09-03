@@ -1,7 +1,7 @@
 import type { Scene } from './scene';
 
 /** Piston in an infinite rigid baffle. Used to validate the solver against theory. */
-export function pistonBaffleScene(a = 20, extent = 220, measureRadius = 150): Scene {
+export function pistonBaffleScene(a = 20, extent = 320, measureRadius = 150): Scene {
   return {
     name: 'piston-baffle',
     description: `반경 ${a}mm 피스톤, 무한 배플. 이론 지향성 2J1(ka sinθ)/(ka sinθ)와 비교용.`,
@@ -27,6 +27,8 @@ export interface SideRadialParams {
   slotZ: [number, number];
   fabric: boolean;
   fabricSigma: number;
+  /** Optional free-form reflector profile [r, z][] replacing the cone (closed against z = coneBaseZ). */
+  reflectorProfile?: [number, number][];
 }
 
 export const SIDE_RADIAL_DEFAULTS: SideRadialParams = {
@@ -51,23 +53,26 @@ export function sideRadialScene(p: Partial<SideRadialParams> = {}): Scene {
   const q = { ...SIDE_RADIAL_DEFAULTS, ...p };
   const R = q.housingR;
   const shapes: Scene['shapes'] = [
-    { kind: 'rect', r: [R - q.wall, R], z: [0, q.height], material: 'rigid', label: 'side wall' },
-    { kind: 'rect', r: [0, R], z: [0, q.wall], material: 'rigid', label: 'bottom' },
-    { kind: 'rect', r: [0, R], z: [q.height - q.wall, q.height], material: 'rigid', label: 'top' },
+    { kind: 'rect', r: [R - q.wall, R], z: [0, q.height], material: 'rigid', role: 'housing', label: 'side wall' },
+    { kind: 'rect', r: [0, R], z: [0, q.wall], material: 'rigid', role: 'housing', label: 'bottom' },
+    { kind: 'rect', r: [0, R], z: [q.height - q.wall, q.height], material: 'rigid', role: 'housing', label: 'top' },
     {
       kind: 'polygon',
-      points: [[0, q.coneApexZ], [q.coneBaseR, q.coneBaseZ], [0, q.coneBaseZ]],
+      points: q.reflectorProfile
+        ? [[0, q.coneBaseZ], ...q.reflectorProfile, [q.reflectorProfile[q.reflectorProfile.length - 1][0], q.coneBaseZ]]
+        : [[0, q.coneApexZ], [q.coneBaseR, q.coneBaseZ], [0, q.coneBaseZ]],
       material: 'rigid',
-      label: 'reflector cone',
+      role: 'reflector',
+      label: q.reflectorProfile ? 'reflector profile' : 'reflector cone',
     },
     // Cut 2 mm past both wall faces so the slot stays open on coarse grids (a 1.5 mm wall
     // rasterises to two cells at dx >= 2 mm; a cut the width of the wall would leave one closed).
-    { kind: 'rect', r: [R - q.wall - 2, R + 2], z: q.slotZ, material: 'air', label: 'side slot' },
+    { kind: 'rect', r: [R - q.wall - 2, R + 2], z: q.slotZ, material: 'air', role: 'slot', label: 'side slot' },
   ];
   if (q.fabric) {
     shapes.push({
       kind: 'rect', r: [R, R + 1], z: [q.slotZ[0] - 1, q.slotZ[1] + 1],
-      material: 'fabric', sigma: q.fabricSigma, label: 'fabric',
+      material: 'fabric', role: 'fabric', sigma: q.fabricSigma, label: 'fabric',
     });
   }
   return {
@@ -109,7 +114,7 @@ export function upFiring360Scene(): Scene {
       { kind: 'rect', r: [R - wall, R], z: [0, H], material: 'rigid', label: 'side wall' },
       { kind: 'rect', r: [0, R], z: [0, wall], material: 'rigid', label: 'bottom' },
       { kind: 'rect', r: [20, R], z: [H - wall, H], material: 'rigid', label: 'top plate' },
-      { kind: 'polygon', points: [[0, H + 12], [R, H + 32], [0, H + 32]], material: 'rigid', label: 'reflector' },
+      { kind: 'polygon', points: [[0, H + 12], [R, H + 32], [0, H + 32]], material: 'rigid', role: 'reflector', label: 'reflector' },
     ],
     drivers: [{ kind: 'piston', z: H, r: [0, 20], dir: '+z', label: 'driver' }],
   };

@@ -49,7 +49,34 @@ export const SIDE_RADIAL_MODEL: ParametricModel = {
   },
 };
 
-export const MODELS: Record<string, ParametricModel> = { [SIDE_RADIAL_MODEL.id]: SIDE_RADIAL_MODEL };
+/** Reflector as a free-form profile: heights at fixed radii, so dishes, truncated cones and bumps are all reachable. */
+export const PROFILE_RADII = [0, 8, 16, 24, 33.5];
+export const SIDE_RADIAL_PROFILE_MODEL: ParametricModel = {
+  id: 'side-radial-profile',
+  name: '측면 방사형, 자유 프로파일 리플렉터 (5점 높이)',
+  variables: [
+    ...PROFILE_RADII.map((r, i) => ({
+      key: `h${i}`, label: `프로파일 높이 @ r=${r}`, unit: 'mm', min: 1.5, max: 30,
+      value: Math.max(1.5, 20 - (r / 30) * 18.5), enabled: true,
+    })),
+    { key: 'slotZ0', label: '슬롯 하단 높이', unit: 'mm', min: 2, max: 30, value: SIDE_RADIAL_DEFAULTS.slotZ[0], enabled: true },
+    { key: 'slotH', label: '슬롯 높이', unit: 'mm', min: 3, max: 25, value: SIDE_RADIAL_DEFAULTS.slotZ[1] - SIDE_RADIAL_DEFAULTS.slotZ[0], enabled: true },
+    { key: 'driverZ', label: '드라이버 높이', unit: 'mm', min: 25, max: 50, value: SIDE_RADIAL_DEFAULTS.driverZ, enabled: false },
+  ],
+  build(p) {
+    const driverZ = p.driverZ;
+    const zTop = SIDE_RADIAL_DEFAULTS.height - SIDE_RADIAL_DEFAULTS.wall - 1;
+    const slotZ0 = Math.min(p.slotZ0, zTop - 3);
+    const slotZ1 = Math.min(slotZ0 + p.slotH, zTop);
+    const profile = PROFILE_RADII.map((r, i) => [r, Math.min(p[`h${i}`], driverZ - 4)] as [number, number]);
+    return sideRadialScene({ slotZ: [slotZ0, slotZ1], driverZ, reflectorProfile: profile });
+  },
+};
+
+export const MODELS: Record<string, ParametricModel> = {
+  [SIDE_RADIAL_MODEL.id]: SIDE_RADIAL_MODEL,
+  [SIDE_RADIAL_PROFILE_MODEL.id]: SIDE_RADIAL_PROFILE_MODEL,
+};
 
 /** Parameter vector with every variable at its baseline value. */
 export function baselineParams(variables: DesignVariable[]): Record<string, number> {

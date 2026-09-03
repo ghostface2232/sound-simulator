@@ -4,12 +4,15 @@ import { PRESETS, pistonBaffleScene } from './engine/presets';
 import { diagnose, type ParityReport } from './engine/runner';
 import type { SimResult } from './engine/analysis';
 import { hasErrors, type Diagnostic } from './engine/checks';
+import { normalizeScene } from './engine/geometry';
+import { buildGrid } from './engine/rasterize';
 import {
-  DEFAULT_OPTIMIZE, SIDE_RADIAL_MODEL,
+  DEFAULT_OPTIMIZE, MODELS, SIDE_RADIAL_MODEL,
   type Candidate, type DesignVariable, type OptimizeProgress, type OptimizeSettings,
 } from './engine/optimize';
 import type { WorkerIn, WorkerOut } from './worker/sim.worker';
-import { FieldView, type GridInfo } from './ui/FieldView';
+import { SectionCanvas, type GridInfo, type SectionCanvasHandle, type Selection, type Tool } from './ui/SectionCanvas';
+import { ShapePanel } from './ui/ShapePanel';
 import { PolarChart, type PolarSeries } from './ui/PolarChart';
 import { ResponseChart, SERIES_COLORS, type ResponseSeries } from './ui/ResponseChart';
 import { OptimizePanel } from './ui/OptimizePanel';
@@ -31,10 +34,12 @@ function DiagnosticList({ items }: { items: Diagnostic[] }) {
   );
 }
 
+const HISTORY_MAX = 100;
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('sim');
   const [presetKey, setPresetKey] = useState<string>('side-radial');
-  const [sceneText, setSceneText] = useState<string>(() => JSON.stringify(PRESETS['side-radial'](), null, 2));
+  const [scene, setSceneState] = useState<Scene>(() => normalizeScene(PRESETS['side-radial']()));
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS);
   const [status, setStatus] = useState<Status>('idle');
   const [message, setMessage] = useState<string>('');
@@ -48,8 +53,17 @@ export default function App() {
   const [polarFreq, setPolarFreq] = useState(5000);
   const [colorScale, setColorScale] = useState(0.05);
 
+  // Editor state.
+  const [selection, setSelection] = useState<Selection>(null);
+  const [tool, setTool] = useState<Tool>('select');
+  const [showGrid, setShowGrid] = useState(false);
+  const canvasRef = useRef<SectionCanvasHandle>(null);
+  const historyRef = useRef<{ past: Scene[]; future: Scene[]; committed: Scene }>({ past: [], future: [], committed: scene });
+  const [historyTick, setHistoryTick] = useState(0);
+
   // Optimisation state.
-  const model = SIDE_RADIAL_MODEL;
+  const [modelId, setModelId] = useState<string>(SIDE_RADIAL_MODEL.id);
+  const model = MODELS[modelId];
   const [variables, setVariables] = useState<DesignVariable[]>(() => model.variables.map((v) => ({ ...v })));
   const [optSettings, setOptSettings] = useState<OptimizeSettings>(DEFAULT_OPTIMIZE);
   const [optRunning, setOptRunning] = useState(false);
@@ -59,6 +73,58 @@ export default function App() {
 
   const workerRef = useRef<Worker | null>(null);
   const peakRef = useRef(0);
+
+  /** Scene updates: commit=true records an undo step. */
+  const updateScene = useCallback((next: Scene, commit = true) => {
+    setSceneState(next);
+    if (commit) {
+      const h = historyRef.current;
+      if (h.committed !== next) {
+        h.past.push(h.committed);
+        if (h.past.length > HISTORY_MAX) h.past.shift();
+        h.future = [];
+        h.committed = next;
+        setHistoryTick((t) => t + 1);
+      }
+    }
+    setResult(null); setFrame(null); setGrid(null); setRunWarnings([]);
+  }, []);
+  const resetScene = useCallback((next: Scene) => {
+    historyRef.current = { past: [], future: [], committed: next };
+    setHistoryTick((t) => t + 1);
+    setSceneState(next);
+    setSelection(null);
+    setResult(null); setFrame(null); setGrid(null); setRunWarnings([]);
+  }, []);
+  const undo = useCallback(() => {
+    const h = historyRef.current;
+    const prev = h.past.pop();
+    if (!prev) return;
+    h.future.push(h.committed); h.committed = prev;
+    setSceneState(prev); setSelection(null); setHistoryTick((t) => t + 1);
+  }, []);
+  const redo = useCallback(() => {
+    const h = historyRef.current;
+    const next = h.future.pop();
+    if (!next) return;
+    h.past.push(h.committed); h.committed = next;
+    setSceneState(next); setSelection(null); setHistoryTick((t) => t + 1);
+  }, []);
+  void historyTick;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+      else if (e.key === 'v' || e.key === 'V') setTool('select');
+      else if (e.key === 'p' || e.key === 'P') setTool('pen');
+      else if (e.key === 'r' || e.key === 'R') setTool('rect');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo]);
 
   useEffect(() => {
     const w = new Worker(new URL('./worker/sim.worker.ts', import.meta.url), { type: 'module' });
@@ -92,7 +158,6 @@ export default function App() {
         case 'opt-done':
           setOptProgress((prev) => ({ done: prev?.total ?? m.ranked.length, total: prev?.total ?? m.ranked.length, best: m.ranked[0] ?? null, ranked: m.ranked }));
           setOptElapsed(m.elapsedMs); setOptRunning(false);
-          // Pre-select the best candidate and the baseline for comparison.
           setSelected(new Set(m.ranked.filter((c, i) => i === 0 || c.origin === 'baseline').map((c) => c.id)));
           break;
         case 'stopped':
@@ -107,41 +172,36 @@ export default function App() {
     return () => w.terminate();
   }, []);
 
-  /** JSON parse result; `null` scene means the text is not valid JSON. */
-  const parsed = useMemo<{ scene: unknown; jsonError: string | null }>(() => {
-    try {
-      return { scene: JSON.parse(sceneText), jsonError: null };
-    } catch (err) {
-      return { scene: null, jsonError: err instanceof Error ? err.message : String(err) };
-    }
-  }, [sceneText]);
-
-  const diagnostics = useMemo<Diagnostic[]>(() => {
-    if (parsed.jsonError) return [{ severity: 'error', code: 'json', message: `JSON 파싱 오류: ${parsed.jsonError}` }];
-    return diagnose(parsed.scene, params);
-  }, [parsed, params]);
+  const diagnostics = useMemo<Diagnostic[]>(() => diagnose(scene, params), [scene, params]);
   const blocked = hasErrors(diagnostics);
   const busy = status === 'running' || optRunning || parityBusy;
 
+  // "What the solver sees": rasterised mask at the current dx (only when requested).
+  const gridMask = useMemo<GridInfo | null>(() => {
+    if (!showGrid || blocked) return null;
+    try {
+      const g = buildGrid(scene, params.dx);
+      return { Nr: g.Nr, Nz: g.Nz, dx: g.dx, zMin: g.zMin, solid: g.solid, sigma: g.sigma, probes: g.probes };
+    } catch { return null; }
+  }, [showGrid, blocked, scene, params.dx]);
+
   const loadPreset = useCallback((key: string) => {
     setPresetKey(key);
-    setSceneText(JSON.stringify(PRESETS[key](), null, 2));
-    setResult(null); setFrame(null); setGrid(null); setRunWarnings([]);
-  }, []);
+    resetScene(normalizeScene(PRESETS[key]()));
+    setTimeout(() => canvasRef.current?.fitDevice(), 0);
+  }, [resetScene]);
 
   const run = useCallback(() => {
     if (blocked || !workerRef.current) return;
     setStatus('running'); setMessage(''); setResult(null); setProgress(0); setRunWarnings([]);
-    // diagnose() has already confirmed the structure, so the cast is safe here.
-    const msg: WorkerIn = { type: 'run', scene: parsed.scene as Scene, params, frameEvery: 25 };
+    const msg: WorkerIn = { type: 'run', scene, params, frameEvery: 25 };
     workerRef.current.postMessage(msg);
-  }, [blocked, parsed, params]);
+  }, [blocked, scene, params]);
 
   const runParity = useCallback(() => {
     if (!workerRef.current) return;
     setParity(null); setParityBusy(true);
-    const scene = pistonBaffleScene(20, 320, 150);
-    const msg: WorkerIn = { type: 'parity', scene, params: { ...params, dx: 2, durationMs: 3, fMax: 10000, spongeCells: 50 } };
+    const msg: WorkerIn = { type: 'parity', scene: pistonBaffleScene(20, 320, 150), params: { ...params, dx: 2, durationMs: 3, fMax: 10000, spongeCells: 50 } };
     workerRef.current.postMessage(msg);
   }, [params]);
 
@@ -149,34 +209,36 @@ export default function App() {
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
   }, []);
 
+  const changeModel = useCallback((id: string) => {
+    setModelId(id);
+    setVariables(MODELS[id].variables.map((v) => ({ ...v })));
+    setOptProgress(null); setSelected(new Set()); setOptElapsed(null);
+  }, []);
+
   const startOptimize = useCallback(() => {
     if (!workerRef.current) return;
     setOptRunning(true); setOptProgress(null); setOptElapsed(null); setSelected(new Set()); setMessage('');
+    setResult(null); setFrame(null); setGrid(null);
     const msg: WorkerIn = { type: 'optimize', modelId: model.id, variables, settings: optSettings, backend: params.backend ?? 'auto' };
     workerRef.current.postMessage(msg);
   }, [model, variables, optSettings, params.backend]);
 
   const toggleSelected = useCallback((id: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+    setSelected((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   }, []);
 
   const applyCandidate = useCallback((c: Candidate) => {
-    const scene = model.build(c.params);
-    scene.description = `${scene.description ?? ''} [최적화 후보 #${c.id}, 점수 ${c.score.toFixed(2)}]`;
-    setSceneText(JSON.stringify(scene, null, 2));
+    const s = normalizeScene(model.build(c.params));
+    s.description = `${s.description ?? ''} [최적화 후보 #${c.id}, 점수 ${c.score.toFixed(2)}]`;
     setPresetKey('side-radial');
-    setResult(null); setFrame(null); setGrid(null); setRunWarnings([]);
+    resetScene(s);
     setMode('sim');
-  }, [model]);
+    setTimeout(() => canvasRef.current?.fitDevice(), 0);
+  }, [model, resetScene]);
 
   const setNum = (key: keyof SimParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setParams({ ...params, [key]: +e.target.value });
 
-  // Colour assignment for compared candidates: stable by selection order of the ranked list.
   const rankedTop = optProgress?.ranked ?? [];
   const compared = rankedTop.filter((c) => selected.has(c.id) && c.result);
   const colorFor = useCallback((id: number) => {
@@ -194,7 +256,7 @@ export default function App() {
   const cells = grid ? grid.Nr * grid.Nz : 0;
   const chartFMin = mode === 'sim' ? (result ? result.freqs[0] : params.fMin) : (compared[0]?.result?.freqs[0] ?? optSettings.fMin);
   const chartFMax = mode === 'sim' ? params.fMax : optSettings.fMax;
-  const description = (parsed.scene as { description?: string } | null)?.description;
+  const h = historyRef.current;
 
   return (
     <div className="app">
@@ -212,7 +274,17 @@ export default function App() {
                 {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
               </select>
             </label>
-            {description && <p className="desc">{description}</p>}
+            {scene.description && <p className="desc">{scene.description}</p>}
+
+            <ShapePanel
+              scene={scene} onChange={(s) => updateScene(s, true)}
+              selection={selection} onSelect={setSelection}
+              tool={tool} setTool={setTool}
+              showGrid={showGrid} setShowGrid={setShowGrid}
+              onFitDevice={() => canvasRef.current?.fitDevice()} onFitDomain={() => canvasRef.current?.fitDomain()}
+              onUndo={undo} onRedo={redo} canUndo={h.past.length > 0} canRedo={h.future.length > 0}
+              editable={!busy}
+            />
 
             <div className="grid2">
               <label>dx (mm)
@@ -263,13 +335,14 @@ export default function App() {
                 스펙트럼 최대 차이 {parity.maxDbDiff.toFixed(3)} dB · CPU {(parity.cpuMs / 1000).toFixed(1)} s / GPU {(parity.gpuMs / 1000).toFixed(1)} s
               </p>
             )}
-
-            <label className="grow">씬 JSON (mm, r-z 단면)
-              <textarea value={sceneText} onChange={(e) => setSceneText(e.target.value)} spellCheck={false} />
-            </label>
           </>
         ) : (
           <>
+            <label>모델
+              <select value={modelId} onChange={(e) => changeModel(e.target.value)} disabled={optRunning}>
+                {Object.values(MODELS).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            </label>
             <OptimizePanel
               model={model}
               variables={variables} setVariables={setVariables}
@@ -286,7 +359,19 @@ export default function App() {
       </aside>
 
       <main className="center">
-        <FieldView grid={grid} frame={frame} scale={colorScale} />
+        <SectionCanvas
+          ref={canvasRef}
+          scene={scene}
+          onChange={updateScene}
+          selection={selection} onSelect={setSelection}
+          tool={tool} onToolDone={() => setTool('select')}
+          field={{ grid, frame, scale: colorScale }}
+          gridMask={gridMask}
+          diagnostics={diagnostics}
+          spongeMm={params.spongeCells * params.dx}
+          editable={mode === 'sim' && !busy}
+          snap={0.5}
+        />
       </main>
 
       <aside className="panel right">

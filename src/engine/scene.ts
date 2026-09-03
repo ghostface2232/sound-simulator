@@ -7,11 +7,15 @@
 
 export type Material = 'rigid' | 'fabric' | 'air';
 
+/** What a shape represents; drives colours in the editor and a few geometry checks. */
+export type ShapeRole = 'housing' | 'reflector' | 'slot' | 'fabric' | 'other';
+
 export interface RectShape {
   kind: 'rect';
   r: [number, number];
   z: [number, number];
   material: Material;
+  role?: ShapeRole;
   /** Flow resistivity in Pa·s/m² (fabric only). Typical grille cloth: 1e5–5e5. */
   sigma?: number;
   label?: string;
@@ -22,6 +26,7 @@ export interface PolygonShape {
   /** Vertices as [r, z] pairs, in mm. */
   points: [number, number][];
   material: Material;
+  role?: ShapeRole;
   sigma?: number;
   label?: string;
 }

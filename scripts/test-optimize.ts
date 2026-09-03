@@ -71,6 +71,29 @@ async function main() {
     for (let i = 0; i < 100; i++) assert.equal(a(), b());
   });
 
+  console.log('profile model');
+  await test('free-form profile model builds valid scenes for dish, truncated cone and bump shapes', async () => {
+    const { SIDE_RADIAL_PROFILE_MODEL } = await import('../src/engine/optimize');
+    const { diagnose } = await import('../src/engine/runner');
+    const { hasErrors } = await import('../src/engine/checks');
+    const { DEFAULT_PARAMS } = await import('../src/engine/scene');
+    const base = { slotZ0: 3, slotH: 10, driverZ: 36 };
+    const shapes = {
+      dish: { h0: 2, h1: 3, h2: 6, h3: 12, h4: 20 },
+      truncated: { h0: 18, h1: 18, h2: 12, h3: 6, h4: 1.5 },
+      bump: { h0: 4, h1: 16, h2: 22, h3: 10, h4: 2 },
+    };
+    for (const [name, h] of Object.entries(shapes)) {
+      const s = SIDE_RADIAL_PROFILE_MODEL.build({ ...base, ...h });
+      const refl = s.shapes.find((x) => x.role === 'reflector');
+      assert.ok(refl && refl.kind === 'polygon' && refl.points.length === 7, name);
+      assert.ok(!hasErrors(diagnose(s, DEFAULT_PARAMS)), `${name}: ${diagnose(s, DEFAULT_PARAMS).filter((d) => d.severity === 'error').map((d) => d.code)}`);
+    }
+    // Heights above the driver are clamped below the membrane instead of producing a conflict.
+    const tall = SIDE_RADIAL_PROFILE_MODEL.build({ ...base, h0: 30, h1: 30, h2: 30, h3: 30, h4: 30 });
+    assert.ok(!hasErrors(diagnose(tall, DEFAULT_PARAMS)));
+  });
+
   console.log('optimizer');
   const small: OptimizeSettings = {
     seed: 7, nSamples: 3, nRefine: 2, topK: 2,
