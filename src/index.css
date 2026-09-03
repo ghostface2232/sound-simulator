@@ -70,6 +70,8 @@ input[type='range'] { width: 100%; }
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
 .grid3 input { width: 100%; }
 table.vars, table.cands { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+table.vars { display: block; overflow-x: auto; max-height: 260px; overflow-y: auto; }
+table.vars td:nth-child(2) { white-space: normal; min-width: 120px; }
 table.vars th, table.cands th { text-align: left; font-weight: 600; color: #666; padding: 2px 4px; border-bottom: 1px solid #e2e4e8; }
 table.vars td, table.cands td { padding: 2px 4px; white-space: nowrap; }
 table.vars input[type='number'] { width: 58px; padding: 3px 4px; }
