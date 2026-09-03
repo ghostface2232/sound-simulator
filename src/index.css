@@ -1,0 +1,57 @@
+:root {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Malgun Gothic', sans-serif;
+  font-size: 13px;
+  color: #1c1e21;
+  background: #f4f5f7;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+
+.app {
+  display: grid;
+  grid-template-columns: 340px 1fr 380px;
+  height: 100vh;
+}
+.panel {
+  padding: 14px;
+  background: #fff;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panel.left { border-right: 1px solid #e2e4e8; }
+.panel.right { border-left: 1px solid #e2e4e8; }
+.center { padding: 10px; display: flex; }
+.field-canvas { width: 100%; height: 100%; background: #f4f5f7; border-radius: 6px; }
+
+h1 { font-size: 16px; margin: 0 0 4px; }
+h2 { font-size: 13px; margin: 6px 0 0; }
+.sub { font-weight: 400; color: #777; margin-left: 6px; font-size: 12px; }
+.desc { color: #555; margin: 0; line-height: 1.4; }
+
+label { display: flex; flex-direction: column; gap: 4px; color: #444; }
+label.grow { flex: 1; min-height: 200px; }
+label.grow textarea { flex: 1; }
+input[type='number'], select, textarea {
+  font: inherit; padding: 5px 7px; border: 1px solid #cfd3da; border-radius: 4px; background: #fafbfc;
+}
+textarea { font-family: ui-monospace, Consolas, monospace; font-size: 11px; resize: vertical; min-height: 200px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.row { display: flex; gap: 8px; }
+button {
+  font: inherit; padding: 7px 14px; border-radius: 5px; border: 1px solid #cfd3da; background: #fff; cursor: pointer;
+}
+button.primary { background: #2f6fe4; color: #fff; border-color: #2f6fe4; }
+button:disabled { opacity: 0.5; cursor: default; }
+.progress { height: 4px; background: #e6e8ec; border-radius: 2px; overflow: hidden; }
+.progress > div { height: 100%; background: #2f6fe4; transition: width 0.1s; }
+.status { margin: 0; min-height: 1.2em; }
+.muted { color: #888; }
+.small { font-size: 11px; line-height: 1.4; }
+.error { color: #c0392b; margin: 0; font-size: 11px; white-space: pre-wrap; }
+.chart { width: 100%; }
+.chart.polar { aspect-ratio: 1; }
+.chart.response { height: 220px; }
+.chart-canvas { width: 100%; height: 100%; }
+input[type='range'] { width: 100%; }
