@@ -70,8 +70,11 @@ export default function App() {
   const [optProgress, setOptProgress] = useState<OptimizeProgress | null>(null);
   const [optElapsed, setOptElapsed] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  /** Geometry shown on the canvas while optimising: the candidate being evaluated, then the best one. */
+  const [optScene, setOptScene] = useState<Scene | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
+  const modelRef = useRef(modelId); modelRef.current = modelId;
   const peakRef = useRef(0);
 
   /** Scene updates: commit=true records an undo step. */
@@ -152,12 +155,16 @@ export default function App() {
         case 'parity-result':
           setParity(m.report); setParityBusy(false);
           break;
+        case 'opt-eval':
+          setOptScene(normalizeScene(MODELS[modelRef.current].build(m.candidate.params)));
+          break;
         case 'opt-progress':
           setOptProgress(m.progress);
           break;
         case 'opt-done':
           setOptProgress((prev) => ({ done: prev?.total ?? m.ranked.length, total: prev?.total ?? m.ranked.length, best: m.ranked[0] ?? null, ranked: m.ranked }));
           setOptElapsed(m.elapsedMs); setOptRunning(false);
+          if (m.ranked[0]) setOptScene(normalizeScene(MODELS[modelRef.current].build(m.ranked[0].params)));
           setSelected(new Set(m.ranked.filter((c, i) => i === 0 || c.origin === 'baseline').map((c) => c.id)));
           break;
         case 'stopped':
@@ -212,7 +219,7 @@ export default function App() {
   const changeModel = useCallback((id: string) => {
     setModelId(id);
     setVariables(MODELS[id].variables.map((v) => ({ ...v })));
-    setOptProgress(null); setSelected(new Set()); setOptElapsed(null);
+    setOptProgress(null); setSelected(new Set()); setOptElapsed(null); setOptScene(null);
   }, []);
 
   const startOptimize = useCallback(() => {
@@ -222,6 +229,10 @@ export default function App() {
     const msg: WorkerIn = { type: 'optimize', modelId: model.id, variables, settings: optSettings, backend: params.backend ?? 'auto' };
     workerRef.current.postMessage(msg);
   }, [model, variables, optSettings, params.backend]);
+
+  const previewCandidate = useCallback((c: Candidate) => {
+    setOptScene(normalizeScene(model.build(c.params)));
+  }, [model]);
 
   const toggleSelected = useCallback((id: number) => {
     setSelected((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
@@ -350,7 +361,7 @@ export default function App() {
               running={optRunning} progress={optProgress} elapsedMs={optElapsed}
               onStart={startOptimize} onStop={stop}
               selected={selected} toggleSelected={toggleSelected}
-              onApply={applyCandidate} colorFor={colorFor}
+              onApply={applyCandidate} colorFor={colorFor} onPreview={previewCandidate}
             />
             {status === 'error' && message && <p className="error">{message}</p>}
             <p className="muted small">평가 백엔드: {(params.backend ?? 'auto').toUpperCase()} (시뮬레이션 탭에서 변경). 탐색은 지정한 dx 로 빠르게 순위를 매기므로, 최종 후보는 "적용" 후 dx 1 mm 로 다시 실행해 확인하세요.</p>
@@ -361,7 +372,7 @@ export default function App() {
       <main className="center">
         <SectionCanvas
           ref={canvasRef}
-          scene={scene}
+          scene={mode === 'opt' && optScene ? optScene : scene}
           onChange={updateScene}
           selection={selection} onSelect={setSelection}
           tool={tool} onToolDone={() => setTool('select')}

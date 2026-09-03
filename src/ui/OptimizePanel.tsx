@@ -15,6 +15,8 @@ interface Props {
   toggleSelected: (id: number) => void;
   onApply: (c: Candidate) => void;
   colorFor: (id: number) => string | null;
+  /** Show this candidate's geometry on the canvas. */
+  onPreview: (c: Candidate) => void;
 }
 
 const fmt = (v: number, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : '—');
@@ -100,8 +102,8 @@ export function OptimizePanel(p: Props) {
             {ranked.slice(0, 12).map((c, rank) => {
               const color = p.colorFor(c.id);
               return (
-                <tr key={c.id} className={rank === 0 ? 'best' : ''}>
-                  <td><input type="checkbox" checked={p.selected.has(c.id)} onChange={() => p.toggleSelected(c.id)} />
+                <tr key={c.id} className={rank === 0 ? 'best' : ''} onClick={() => p.onPreview(c)} title="클릭: 캔버스에 이 후보 형상 표시">
+                  <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={p.selected.has(c.id)} onChange={() => p.toggleSelected(c.id)} />
                     {color && <span className="swatch" style={{ background: color }} />}</td>
                   <td title={c.origin}>{c.id}{c.origin === 'baseline' ? '*' : ''}</td>
                   <td><b>{fmt(c.score, 2)}</b></td>
@@ -110,7 +112,7 @@ export function OptimizePanel(p: Props) {
                   <td>{fmt(c.breakdown?.flatness ?? NaN)}</td>
                   <td>{fmt(c.breakdown?.leakage ?? NaN)}</td>
                   {variables.filter((v) => v.enabled).map((v) => <td key={v.key}>{fmt(c.params[v.key])}</td>)}
-                  <td><button className="mini" onClick={() => p.onApply(c)} disabled={p.running}>적용</button></td>
+                  <td><button className="mini" onClick={(e) => { e.stopPropagation(); p.onApply(c); }} disabled={p.running}>적용</button></td>
                 </tr>
               );
             })}

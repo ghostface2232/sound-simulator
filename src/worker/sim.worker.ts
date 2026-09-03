@@ -18,6 +18,7 @@ export type WorkerOut =
   | { type: 'frame'; step: number; nSteps: number; p: Float32Array }
   | { type: 'done'; freqs: Float32Array; angles: Float32Array; db: Float32Array; dt: number; nSteps: number; fMinReliable: number; warnings: Diagnostic[]; elapsedMs: number; backend: BackendUsed }
   | { type: 'parity-result'; report: ParityReport }
+  | { type: 'opt-eval'; candidate: Candidate }
   | { type: 'opt-progress'; progress: OptimizeProgress }
   | { type: 'opt-done'; ranked: Candidate[]; elapsedMs: number }
   | { type: 'stopped' }
@@ -74,6 +75,7 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
         return out?.result ?? null;
       }, {
         onProgress: async (p) => { post({ type: 'opt-progress', progress: trimProgress(p) }); await yieldToQueue(); },
+        onEvaluate: (c) => post({ type: 'opt-eval', candidate: { ...c, result: null } }),
         shouldStop: () => stopRequested,
       });
       if (stopRequested) { post({ type: 'stopped' }); return; }

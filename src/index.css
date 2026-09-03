@@ -76,6 +76,8 @@ table.vars input[type='number'] { width: 58px; padding: 3px 4px; }
 table.vars tr.off td { color: #aaa; }
 table.cands { display: block; overflow-x: auto; }
 table.cands tr.best td { background: #f2f7ff; }
+table.cands tbody tr { cursor: pointer; }
+table.cands tbody tr:hover td { background: #f7f9fc; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 4px; vertical-align: middle; }
 button.mini { padding: 2px 8px; font-size: 11px; }
 details summary { cursor: pointer; color: #444; }
