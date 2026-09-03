@@ -2,9 +2,10 @@
  * Parametric models, objective function and a deterministic optimiser.
  * Pure TypeScript: usable from the worker, the UI and node scripts.
  */
-import type { Scene, SimParams } from './scene';
+import type { Scene, SimParams, PathNode } from './scene';
 import type { SimResult } from './analysis';
 import { sideRadialScene, SIDE_RADIAL_DEFAULTS } from './presets';
+import { normalizeScene, shapeToPath } from './geometry';
 
 // ---------------------------------------------------------------------------
 // Parametric models
@@ -77,6 +78,78 @@ export const MODELS: Record<string, ParametricModel> = {
   [SIDE_RADIAL_MODEL.id]: SIDE_RADIAL_MODEL,
   [SIDE_RADIAL_PROFILE_MODEL.id]: SIDE_RADIAL_PROFILE_MODEL,
 };
+
+export const SCENE_MODEL_ID = 'scene';
+
+/**
+ * Model built from the user's own scene: every reflector anchor becomes a
+ * design variable (z enabled, r optional; Bézier handles move with the anchor),
+ * plus slot offsets and driver height. The baseline is exactly the edited scene,
+ * so optimisation starts from what the user drew and varies it.
+ */
+export function makeSceneModel(base: Scene, range = 8): ParametricModel {
+  const scene = normalizeScene(base);
+  const variables: DesignVariable[] = [];
+  scene.shapes.forEach((s, si) => {
+    const p = shapeToPath(s);
+    const name = p.label ? p.label : `형상 ${si + 1}`;
+    if (p.role === 'reflector') {
+      p.nodes.forEach((n, ni) => {
+        variables.push({ key: `s${si}n${ni}z`, label: `${name} 앵커 ${ni + 1} z`, unit: 'mm', min: n.p[1] - range, max: n.p[1] + range, value: n.p[1], enabled: true });
+        if (n.p[0] > 0.01) {
+          variables.push({ key: `s${si}n${ni}r`, label: `${name} 앵커 ${ni + 1} r`, unit: 'mm', min: Math.max(0, n.p[0] - range), max: n.p[0] + range, value: n.p[0], enabled: false });
+        }
+      });
+    } else if (p.role === 'slot') {
+      variables.push({ key: `s${si}dz`, label: `${name} 높이 이동`, unit: 'mm', min: -range, max: range, value: 0, enabled: true });
+      variables.push({ key: `s${si}dh`, label: `${name} 높이 배율`, min: 0.5, max: 2, value: 1, enabled: false });
+    }
+  });
+  scene.drivers.forEach((d, di) => {
+    variables.push({ key: `d${di}dz`, label: `${d.label ?? `드라이버 ${di + 1}`} 높이 이동`, unit: 'mm', min: -range, max: range, value: 0, enabled: false });
+  });
+
+  return {
+    id: SCENE_MODEL_ID,
+    name: '현재 형상 (편집한 씬을 기준으로 변형)',
+    variables,
+    build(params) {
+      const out = normalizeScene(scene);
+      out.shapes = out.shapes.map((s, si) => {
+        const p = shapeToPath(s);
+        if (p.role === 'reflector') {
+          p.nodes = p.nodes.map((n, ni) => {
+            const dz = (params[`s${si}n${ni}z`] ?? n.p[1]) - n.p[1];
+            const dr = n.p[0] > 0.01 ? (params[`s${si}n${ni}r`] ?? n.p[0]) - n.p[0] : 0;
+            return shiftNode(n, dr, dz);
+          });
+        } else if (p.role === 'slot') {
+          const dz = params[`s${si}dz`] ?? 0;
+          const dh = params[`s${si}dh`] ?? 1;
+          const z0 = Math.min(...p.nodes.map((n) => n.p[1]));
+          p.nodes = p.nodes.map((n) => scaleNodeZ(shiftNode(n, 0, dz), z0 + dz, dh));
+        }
+        return p;
+      });
+      out.drivers = out.drivers.map((d, di) => {
+        const dz = params[`d${di}dz`] ?? 0;
+        if (dz === 0) return d;
+        return d.kind === 'piston' ? { ...d, z: d.z + dz } : { ...d, z: [d.z[0] + dz, d.z[1] + dz] };
+      });
+      return out;
+    },
+  };
+}
+
+function shiftNode(n: PathNode, dr: number, dz: number): PathNode {
+  const mv = (q: [number, number]): [number, number] => [Math.max(0, q[0] + dr), q[1] + dz];
+  return { p: mv(n.p), ...(n.hIn ? { hIn: mv(n.hIn) } : {}), ...(n.hOut ? { hOut: mv(n.hOut) } : {}) };
+}
+
+function scaleNodeZ(n: PathNode, z0: number, k: number): PathNode {
+  const sc = (q: [number, number]): [number, number] => [q[0], z0 + (q[1] - z0) * k];
+  return { p: sc(n.p), ...(n.hIn ? { hIn: sc(n.hIn) } : {}), ...(n.hOut ? { hOut: sc(n.hOut) } : {}) };
+}
 
 /** Parameter vector with every variable at its baseline value. */
 export function baselineParams(variables: DesignVariable[]): Record<string, number> {
@@ -177,7 +250,7 @@ export interface OptimizeSettings {
   seed: number;
   nSamples: number;
   nRefine: number;
-  /** Number of parents kept for refinement. */
+  /** Number of parents kept in the evolution phase. */
   topK: number;
   dx: number;
   durationMs: number;
@@ -185,12 +258,16 @@ export interface OptimizeSettings {
   fMax: number;
   spongeMm: number;
   objective: ObjectiveSettings;
+  /** local: Gaussian steps around the baseline; global: Latin-hypercube over the full ranges. */
+  explore: 'local' | 'global';
+  /** Step size for local exploration as a fraction of each variable range. */
+  localSigma: number;
 }
 
 export const DEFAULT_OPTIMIZE: OptimizeSettings = {
   seed: 1,
   nSamples: 16,
-  nRefine: 12,
+  nRefine: 24,
   topK: 4,
   dx: 2,
   durationMs: 6,
@@ -198,6 +275,8 @@ export const DEFAULT_OPTIMIZE: OptimizeSettings = {
   fMax: 10000,
   spongeMm: 100,
   objective: DEFAULT_OBJECTIVE,
+  explore: 'local',
+  localSigma: 0.25,
 };
 
 export function simParamsFor(s: OptimizeSettings): SimParams {
@@ -214,7 +293,10 @@ export function simParamsFor(s: OptimizeSettings): SimParams {
 
 export interface Candidate {
   id: number;
-  origin: 'baseline' | 'sample' | 'refine';
+  /** baseline = start shape, sample = exploration, step = random step from a parent, momentum = continued along an improving direction. */
+  origin: 'baseline' | 'sample' | 'step' | 'momentum';
+  /** Candidate this one was derived from (evolution phase). */
+  parentId?: number;
   params: Record<string, number>;
   score: number;
   breakdown: ObjectiveBreakdown | null;
@@ -294,9 +376,11 @@ export async function optimize(
   let nextId = 0;
   const total = 1 + settings.nSamples + settings.nRefine;
 
-  const run = async (params: Record<string, number>, origin: Candidate['origin']): Promise<Candidate | null> => {
+  const byId = new Map<number, Candidate>();
+  const run = async (params: Record<string, number>, origin: Candidate['origin'], parentId?: number): Promise<Candidate | null> => {
     if (hooks.shouldStop?.()) return null;
-    const c: Candidate = { id: nextId++, origin, params, score: -Infinity, breakdown: null, result: null };
+    const c: Candidate = { id: nextId++, origin, params, score: -Infinity, breakdown: null, result: null, ...(parentId !== undefined ? { parentId } : {}) };
+    byId.set(c.id, c);
     hooks.onEvaluate?.(c);
     let result: SimResult | null = null;
     try {
@@ -319,23 +403,51 @@ export async function optimize(
   // 1. Baseline (all variables at their default values).
   if (!(await run({ ...base }, 'baseline'))) return rankCandidates(all);
 
-  // 2. Space-filling exploration.
-  const lhs = latinHypercube(settings.nSamples, Math.max(1, active.length), rng);
-  for (let i = 0; i < settings.nSamples; i++) {
-    const p = { ...base };
-    active.forEach((v, d) => { p[v.key] = snap(v.min + lhs[i][d] * (v.max - v.min)); });
-    if (!(await run(p, 'sample'))) return rankCandidates(all);
+  // 2. Exploration: small Gaussian steps around the baseline, or space-filling over the ranges.
+  if (settings.explore === 'global') {
+    const lhs = latinHypercube(settings.nSamples, Math.max(1, active.length), rng);
+    for (let i = 0; i < settings.nSamples; i++) {
+      const p = { ...base };
+      active.forEach((v, d) => { p[v.key] = snap(v.min + lhs[i][d] * (v.max - v.min)); });
+      if (!(await run(p, 'sample'))) return rankCandidates(all);
+    }
+  } else {
+    for (let i = 0; i < settings.nSamples; i++) {
+      const p = { ...base };
+      for (const v of active) p[v.key] = snap(clamp(v.value + gaussian(rng) * settings.localSigma * (v.max - v.min), v.min, v.max));
+      if (!(await run(p, 'sample'))) return rankCandidates(all);
+    }
   }
 
-  // 3. Local refinement around the current best parents, shrinking step size.
+  // 3. Evolution (self-improving loop). Keep the best `topK` designs as parents. A child either
+  //    continues along the direction that made its parent better than the parent's own parent
+  //    (momentum) or takes a random step. The step size follows the 1/5 success rule: it grows
+  //    while steps keep improving and shrinks when they stop.
+  let sigma = settings.explore === 'local' ? settings.localSigma : 0.15;
+  const recent: boolean[] = [];
   for (let i = 0; i < settings.nRefine; i++) {
     const parents = rankCandidates(all).filter((c) => Number.isFinite(c.score)).slice(0, settings.topK);
     if (parents.length === 0) break;
     const parent = parents[i % parents.length];
-    const sigma = 0.15 * (1 - (0.7 * i) / Math.max(1, settings.nRefine));
+    const gp = parent.parentId !== undefined ? byId.get(parent.parentId) : undefined;
+    const improving = !!gp && Number.isFinite(gp.score) && parent.score > gp.score;
+    const useMomentum = improving && i % 3 !== 2; // two of three steps follow a good direction, one explores
     const p = { ...parent.params };
-    for (const v of active) p[v.key] = snap(clamp(p[v.key] + gaussian(rng) * sigma * (v.max - v.min), v.min, v.max));
-    if (!(await run(p, 'refine'))) return rankCandidates(all);
+    if (useMomentum && gp) {
+      const k = 0.5 + rng(); // 0.5x .. 1.5x of the previous successful step
+      for (const v of active) {
+        const dir = parent.params[v.key] - gp.params[v.key];
+        p[v.key] = snap(clamp(parent.params[v.key] + k * dir + gaussian(rng) * 0.25 * sigma * (v.max - v.min), v.min, v.max));
+      }
+    } else {
+      for (const v of active) p[v.key] = snap(clamp(parent.params[v.key] + gaussian(rng) * sigma * (v.max - v.min), v.min, v.max));
+    }
+    const child = await run(p, useMomentum ? 'momentum' : 'step', parent.id);
+    if (!child) return rankCandidates(all);
+    recent.push(child.score > parent.score);
+    if (recent.length > 5) recent.shift();
+    const rate = recent.filter(Boolean).length / recent.length;
+    sigma = clamp(sigma * (rate > 0.2 ? 1.15 : 0.85), 0.02, 1);
   }
 
   return rankCandidates(all);

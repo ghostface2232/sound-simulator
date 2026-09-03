@@ -17,6 +17,9 @@ interface Props {
   colorFor: (id: number) => string | null;
   /** Show this candidate's geometry on the canvas. */
   onPreview: (c: Candidate) => void;
+  /** Scene model only: re-capture the editor scene as the baseline. */
+  onRefreshBase?: () => void;
+  baseStale?: boolean;
 }
 
 const fmt = (v: number, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : '—');
@@ -40,7 +43,13 @@ export function OptimizePanel(p: Props) {
 
   return (
     <>
-      <p className="desc">{p.model.name}. 설계변수 범위를 정하고 실행하면 라틴 하이퍼큐브 탐색 후 상위 후보를 국소 정련합니다. 같은 시드와 설정이면 결과가 동일합니다.</p>
+      <p className="desc">{p.model.name}. 기준(현재 값)에서 출발해 {settings.explore === 'local' ? '작은 가우시안 변형으로' : '범위 전체를 라틴 하이퍼큐브로'} 탐색한 뒤, 상위 후보를 부모로 삼아 점수가 오른 방향은 계속 밀고(모멘텀) 그 외에는 무작위 걸음을 시도하며 걸음 폭을 성공률에 맞춰 조절하는 자기 개선 루프를 돕니다. 같은 시드와 설정이면 결과가 동일합니다.</p>
+      {p.onRefreshBase && (
+        <div className="row">
+          <button onClick={p.onRefreshBase} disabled={p.running}>현재 형상을 기준으로 다시 가져오기</button>
+          {p.baseStale && <span className="muted small">편집기 형상이 기준과 다릅니다</span>}
+        </div>
+      )}
 
       <table className="vars">
         <thead><tr><th></th><th>변수</th><th>최소</th><th>최대</th><th>기준</th></tr></thead>
@@ -58,8 +67,15 @@ export function OptimizePanel(p: Props) {
       </table>
 
       <div className="grid3">
+        <label>탐색 방식
+          <select value={settings.explore} onChange={(e) => p.setSettings({ ...settings, explore: e.target.value as OptimizeSettings['explore'] })}>
+            <option value="local">국소 (기준 근처)</option>
+            <option value="global">전역 (범위 전체)</option>
+          </select>
+        </label>
+        <label>국소 폭 (범위 비율)<input type="number" step="0.05" min="0.02" max="1" value={settings.localSigma} onChange={setNum('localSigma')} disabled={settings.explore !== 'local'} /></label>
         <label>탐색 샘플<input type="number" min="1" max="200" value={settings.nSamples} onChange={setNum('nSamples')} /></label>
-        <label>정련 횟수<input type="number" min="0" max="200" value={settings.nRefine} onChange={setNum('nRefine')} /></label>
+        <label>진화 평가 수<input type="number" min="0" max="400" value={settings.nRefine} onChange={setNum('nRefine')} /></label>
         <label>시드<input type="number" min="0" value={settings.seed} onChange={setNum('seed')} /></label>
         <label>dx (mm)<input type="number" step="0.25" min="0.5" max="4" value={settings.dx} onChange={setNum('dx')} /></label>
         <label>시간 (ms)<input type="number" min="2" max="40" value={settings.durationMs} onChange={setNum('durationMs')} /></label>

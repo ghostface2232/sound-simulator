@@ -1,12 +1,18 @@
 /**
- * 2-D geometry helpers for the r-z section: polygon predicates, scene
- * normalisation (rect -> polygon) and geometric conflict checks that the
- * structural validator in checks.ts does not cover.
+ * 2-D geometry helpers for the r-z section: polygon predicates, cubic Bézier
+ * paths (flattening, splitting, smoothing), scene normalisation and the
+ * geometric conflict checks that the structural validator does not cover.
  */
-import type { Scene, Shape, PolygonShape, Driver, ShapeRole, Material } from './scene';
+import type { Scene, Shape, PathShape, PathNode, Driver, ShapeRole, Material } from './scene';
 import type { Diagnostic } from './checks';
 
 export type Pt = [number, number];
+
+/** Maximum chord length (mm) used when flattening curves for the solver and hit-testing. */
+export const FLATTEN_STEP = 0.5;
+
+// ---------------------------------------------------------------------------
+// Polygons
 
 export function pointInPolygon(r: number, z: number, pts: Pt[]): boolean {
   let inside = false;
@@ -93,10 +99,131 @@ export function asAxisAlignedRect(pts: Pt[]): { r0: number; r1: number; z0: numb
   return Math.abs(polygonArea(pts)) > 1e-9 ? bb : null;
 }
 
+// ---------------------------------------------------------------------------
+// Cubic Bézier paths
+
+export const bezierPoint = (p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt => {
+  const u = 1 - t;
+  const a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+  return [a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]];
+};
+
+export const segmentIsLine = (a: PathNode, b: PathNode): boolean => !a.hOut && !b.hIn;
+
+/** Control points of the segment from node a to node b. */
+export function segmentControls(a: PathNode, b: PathNode): [Pt, Pt, Pt, Pt] {
+  return [a.p, a.hOut ?? a.p, b.hIn ?? b.p, b.p];
+}
+
+/** Points along the segment a→b including a, excluding b. */
+export function flattenSegment(a: PathNode, b: PathNode, maxStep = FLATTEN_STEP): Pt[] {
+  if (segmentIsLine(a, b)) return [a.p];
+  const [p0, p1, p2, p3] = segmentControls(a, b);
+  const len = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) + Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) + Math.hypot(p3[0] - p2[0], p3[1] - p2[1]);
+  const n = Math.min(256, Math.max(2, Math.ceil(len / maxStep)));
+  const out: Pt[] = [];
+  for (let i = 0; i < n; i++) out.push(bezierPoint(p0, p1, p2, p3, i / n));
+  return out;
+}
+
+/** Flatten a closed path to a polygon. Straight segments contribute only their start node. */
+export function flattenPath(nodes: PathNode[], maxStep = FLATTEN_STEP): Pt[] {
+  const out: Pt[] = [];
+  for (let i = 0; i < nodes.length; i++) out.push(...flattenSegment(nodes[i], nodes[(i + 1) % nodes.length], maxStep));
+  return out;
+}
+
+/** Split segment a→b at parameter t (de Casteljau). The returned nodes reproduce the original curve. */
+export function splitSegment(a: PathNode, b: PathNode, t: number): { a: PathNode; mid: PathNode; b: PathNode } {
+  if (segmentIsLine(a, b)) {
+    return { a, mid: { p: [a.p[0] + t * (b.p[0] - a.p[0]), a.p[1] + t * (b.p[1] - a.p[1])] }, b };
+  }
+  const [p0, p1, p2, p3] = segmentControls(a, b);
+  const lerp = (x: Pt, y: Pt): Pt => [x[0] + t * (y[0] - x[0]), x[1] + t * (y[1] - x[1])];
+  const q0 = lerp(p0, p1), q1 = lerp(p1, p2), q2 = lerp(p2, p3);
+  const r0 = lerp(q0, q1), r1 = lerp(q1, q2);
+  const m = lerp(r0, r1);
+  return {
+    a: { ...a, hOut: q0 },
+    mid: { p: m, hIn: r0, hOut: r1 },
+    b: { ...b, hIn: q2 },
+  };
+}
+
+/** Nearest point on the path to q: segment index, parameter and distance. */
+export function nearestOnPath(nodes: PathNode[], q: Pt): { seg: number; t: number; dist: number; point: Pt } {
+  let best = { seg: 0, t: 0, dist: Infinity, point: nodes[0]?.p ?? [0, 0] as Pt };
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i], b = nodes[(i + 1) % nodes.length];
+    if (segmentIsLine(a, b)) {
+      const dx = b.p[0] - a.p[0], dz = b.p[1] - a.p[1];
+      const l2 = dx * dx + dz * dz;
+      const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((q[0] - a.p[0]) * dx + (q[1] - a.p[1]) * dz) / l2));
+      const point: Pt = [a.p[0] + t * dx, a.p[1] + t * dz];
+      const dist = Math.hypot(q[0] - point[0], q[1] - point[1]);
+      if (dist < best.dist) best = { seg: i, t, dist, point };
+    } else {
+      const [p0, p1, p2, p3] = segmentControls(a, b);
+      const n = 48;
+      for (let k = 0; k <= n; k++) {
+        const t = k / n;
+        const point = bezierPoint(p0, p1, p2, p3, t);
+        const dist = Math.hypot(q[0] - point[0], q[1] - point[1]);
+        if (dist < best.dist) best = { seg: i, t, dist, point };
+      }
+    }
+  }
+  return best;
+}
+
+/** Give node i Catmull-Rom style tangent handles (smooth corner). */
+export function smoothNode(nodes: PathNode[], i: number): PathNode {
+  const n = nodes.length;
+  const prev = nodes[(i - 1 + n) % n].p, next = nodes[(i + 1) % n].p, p = nodes[i].p;
+  if (p[0] < 1e-9) {
+    // Anchor on the axis: the mirrored shape must stay C1 across r = 0, so the tangent is
+    // perpendicular to the axis, and no handle may cross to r < 0. Segments running along the
+    // axis (neighbour also at r = 0) stay straight.
+    const out: PathNode = { p };
+    if (next[0] > 1e-9) out.hOut = [Math.abs(next[0] - p[0]) / 3, p[1]];
+    if (prev[0] > 1e-9) out.hIn = [Math.abs(prev[0] - p[0]) / 3, p[1]];
+    return out;
+  }
+  const d: Pt = [(next[0] - prev[0]) / 6, (next[1] - prev[1]) / 6];
+  return { p, hIn: [Math.max(0, p[0] - d[0]), p[1] - d[1]], hOut: [Math.max(0, p[0] + d[0]), p[1] + d[1]] };
+}
+
+export const cornerNode = (node: PathNode): PathNode => ({ p: node.p });
+
+/** True if both handles exist and are collinear through the anchor. */
+export function isSmoothNode(node: PathNode): boolean {
+  if (!node.hIn || !node.hOut) return false;
+  const a: Pt = [node.hIn[0] - node.p[0], node.hIn[1] - node.p[1]];
+  const b: Pt = [node.hOut[0] - node.p[0], node.hOut[1] - node.p[1]];
+  const la = Math.hypot(a[0], a[1]), lb = Math.hypot(b[0], b[1]);
+  if (la < 1e-9 || lb < 1e-9) return false;
+  return (a[0] * b[0] + a[1] * b[1]) / (la * lb) < -0.999;
+}
+
+export function polygonToPath(pts: Pt[]): PathNode[] {
+  return pts.map((p) => ({ p: [p[0], p[1]] as Pt }));
+}
+
+// ---------------------------------------------------------------------------
+// Shapes and scenes
+
 export function shapeToPolygon(s: Shape): Pt[] {
   if (s.kind === 'polygon') return s.points;
+  if (s.kind === 'path') return flattenPath(s.nodes);
   const r0 = Math.min(...s.r), r1 = Math.max(...s.r), z0 = Math.min(...s.z), z1 = Math.max(...s.z);
   return [[r0, z0], [r1, z0], [r1, z1], [r0, z1]];
+}
+
+/** Editor form of any shape: a closed Bézier path (straight segments where the source had none). */
+export function shapeToPath(s: Shape): PathShape {
+  const base = { material: s.material, role: s.role ?? defaultRole(s.material), ...(s.sigma !== undefined ? { sigma: s.sigma } : {}), ...(s.label !== undefined ? { label: s.label } : {}) };
+  if (s.kind === 'path') return { ...base, kind: 'path', nodes: s.nodes.map((n) => ({ p: [n.p[0], n.p[1]] as Pt, ...(n.hIn ? { hIn: [n.hIn[0], n.hIn[1]] as Pt } : {}), ...(n.hOut ? { hOut: [n.hOut[0], n.hOut[1]] as Pt } : {}) })) };
+  return { ...base, kind: 'path', nodes: polygonToPath(shapeToPolygon(s)) };
 }
 
 export function defaultRole(material: Material): ShapeRole {
@@ -112,17 +239,15 @@ export function materialForRole(role: ShapeRole, current?: Material): Material {
   }
 }
 
-/** Editor form of a scene: every shape is a polygon with a role. Rasterises identically. */
+/** Editor form of a scene: every shape is a path with a role. Rasterises identically to the source. */
 export function normalizeScene(scene: Scene): Scene {
-  const shapes: PolygonShape[] = scene.shapes.map((s) => ({
-    kind: 'polygon',
-    points: shapeToPolygon(s).map(([r, z]) => [r, z] as Pt),
-    material: s.material,
-    role: s.role ?? defaultRole(s.material),
-    ...(s.sigma !== undefined ? { sigma: s.sigma } : {}),
-    ...(s.label !== undefined ? { label: s.label } : {}),
-  }));
-  return { ...scene, shapes, drivers: scene.drivers.map((d) => ({ ...d })), measure: { ...scene.measure }, domain: { ...scene.domain } };
+  return {
+    ...scene,
+    shapes: scene.shapes.map(shapeToPath),
+    drivers: scene.drivers.map((d) => ({ ...d })),
+    measure: { ...scene.measure },
+    domain: { ...scene.domain },
+  };
 }
 
 /** Driver face as a segment plus its firing direction (unit vector in r-z). */
@@ -160,10 +285,11 @@ export function checkGeometry(scene: Scene): Diagnostic[] {
   scene.shapes.forEach((s, k) => {
     const pts = polys[k];
     const name = label(s, k, '형상');
-    if (s.kind === 'polygon') {
+    if (s.kind !== 'rect') {
       const x = polygonSelfIntersection(pts);
-      if (x) out.push({ severity: 'error', code: 'poly-self-intersect', message: `${name}: 폴리곤이 스스로 교차합니다.`, target: { kind: 'shape', index: k }, point: x });
+      if (x) out.push({ severity: 'error', code: 'poly-self-intersect', message: `${name}: 외곽선이 스스로 교차합니다.`, target: { kind: 'shape', index: k }, point: x });
       if (Math.abs(polygonArea(pts)) < 0.05) out.push({ severity: 'error', code: 'poly-degenerate', message: `${name}: 면적이 0 에 가깝습니다.`, target: { kind: 'shape', index: k }, point: pts[0] });
+      if (pts.some(([r]) => r < -1e-9)) out.push({ severity: 'error', code: 'curve-negative-r', message: `${name}: 곡선이 축(r = 0) 왼쪽으로 나갑니다.`, target: { kind: 'shape', index: k }, point: pts.find(([r]) => r < 0) });
     }
     if (s.role === 'slot' && s.material === 'air' && !rigid.some((r) => r.i !== k && polygonsOverlap(pts, r.pts))) {
       out.push({ severity: 'warning', code: 'slot-no-wall', message: `${name}: 슬롯이 어떤 벽도 뚫지 않습니다.`, target: { kind: 'shape', index: k }, point: pts[0] });

@@ -1,7 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import type { Scene, PolygonShape, Driver, ShapeRole } from '../engine/scene';
+import type { Scene, PathShape, PathNode, Driver, ShapeRole } from '../engine/scene';
 import type { Diagnostic } from '../engine/checks';
-import { distToSegment, driverSegment, pointInPolygon, sceneBounds, shapeToPolygon, type Pt } from '../engine/geometry';
+import {
+  cornerNode, distToSegment, driverSegment, isSmoothNode, nearestOnPath, pointInPolygon, sceneBounds,
+  segmentIsLine, shapeToPath, shapeToPolygon, smoothNode, splitSegment, type Pt,
+} from '../engine/geometry';
 
 export interface GridInfo {
   Nr: number; Nz: number; dx: number; zMin: number;
@@ -10,7 +13,7 @@ export interface GridInfo {
 }
 
 export type Selection =
-  | { kind: 'shape'; index: number; vertex?: number }
+  | { kind: 'shape'; index: number; vertex?: number; handle?: 'in' | 'out' }
   | { kind: 'driver'; index: number }
   | { kind: 'measure' }
   | null;
@@ -53,18 +56,20 @@ export const ERROR_COLOR = '#d62828';
 interface View { s: number; ox: number; oy: number }
 
 type Drag =
-  | { kind: 'vertex'; index: number; vertex: number }
-  | { kind: 'shape'; index: number; orig: Pt[]; start: Pt }
+  | { kind: 'anchor'; index: number; node: number; orig: PathNode; start: Pt }
+  | { kind: 'handle'; index: number; node: number; which: 'in' | 'out' }
+  | { kind: 'shape'; index: number; orig: PathNode[]; start: Pt }
   | { kind: 'driverEnd'; index: number; end: 0 | 1 }
   | { kind: 'driver'; index: number; orig: Driver; start: Pt }
   | { kind: 'measureRadius' }
   | { kind: 'measureCenter'; startZ: number; origZ: number }
   | { kind: 'pan'; startPx: [number, number]; origView: View }
-  | { kind: 'rect'; start: Pt; current: Pt };
+  | { kind: 'rect'; start: Pt; current: Pt }
+  | { kind: 'pen'; node: number; startPx: [number, number]; dragged: boolean };
 
 const HANDLE_PX = 7;
 
-function roleOf(s: { role?: ShapeRole; material: string }): ShapeRole {
+export function roleOf(s: { role?: ShapeRole; material: string }): ShapeRole {
   return s.role ?? (s.material === 'rigid' ? 'housing' : s.material === 'fabric' ? 'fabric' : 'slot');
 }
 
@@ -79,6 +84,14 @@ function makeHatch(): CanvasPattern | null {
   return g.createPattern(c, 'repeat');
 }
 
+const cloneNode = (n: PathNode): PathNode => ({ p: [n.p[0], n.p[1]], ...(n.hIn ? { hIn: [n.hIn[0], n.hIn[1]] as Pt } : {}), ...(n.hOut ? { hOut: [n.hOut[0], n.hOut[1]] as Pt } : {}) });
+const cloneNodes = (ns: PathNode[]) => ns.map(cloneNode);
+const translateNode = (n: PathNode, dr: number, dz: number): PathNode => ({
+  p: [n.p[0] + dr, n.p[1] + dz],
+  ...(n.hIn ? { hIn: [n.hIn[0] + dr, n.hIn[1] + dz] as Pt } : {}),
+  ...(n.hOut ? { hOut: [n.hOut[0] + dr, n.hOut[1] + dz] as Pt } : {}),
+});
+
 export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function SectionCanvas(p, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -86,7 +99,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   const [view, setView] = useState<View>({ s: 4, ox: 0, oy: 0 });
   const viewRef = useRef(view); viewRef.current = view;
   const dragRef = useRef<Drag | null>(null);
-  const [penPoints, setPenPoints] = useState<Pt[]>([]);
+  const [penNodes, setPenNodes] = useState<PathNode[]>([]);
   const [mouseMm, setMouseMm] = useState<Pt | null>(null);
   const [rectDrag, setRectDrag] = useState<{ start: Pt; current: Pt } | null>(null);
   const hatchRef = useRef<CanvasPattern | null>(null);
@@ -98,6 +111,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   const toMm = useCallback((px: number, py: number, v: View = viewRef.current): Pt => [(px - v.ox) / v.s, (v.oy - py) / v.s], []);
   const snapV = useCallback((v: number) => Math.round(v / p.snap) * p.snap, [p.snap]);
   const snapR = useCallback((r: number) => Math.max(0, snapV(Math.abs(r))), [snapV]);
+  const snapH = (v: number) => Math.round(v * 10) / 10; // handles snap to 0.1 mm
 
   const fitBox = useCallback((r0: number, r1: number, z0: number, z1: number, margin: number) => {
     const el = wrapRef.current;
@@ -113,7 +127,6 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     fitDomain: () => { const d = p.scene.domain; fitBox(-d.rMax, d.rMax, d.zMin, d.zMax, 5); },
   }), [p.scene, fitBox]);
 
-  // Resize tracking.
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -129,7 +142,6 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     return () => ro.disconnect();
   }, [fitBox, p.scene]);
 
-  // Wheel zoom (non-passive so we can prevent page scroll).
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
@@ -139,14 +151,14 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
       const v = viewRef.current;
       const f = Math.exp(-e.deltaY * 0.0015);
-      const s = Math.min(60, Math.max(0.3, v.s * f));
+      const s = Math.min(80, Math.max(0.3, v.s * f));
       setView({ s, ox: px - (px - v.ox) * (s / v.s), oy: py - (py - v.oy) * (s / v.s) });
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  // ---- field image -----------------------------------------------------------
+  // ---- raster layers ---------------------------------------------------------
   const fieldImage = useMemo(() => {
     const { grid, frame, scale } = p.field;
     if (!grid || !frame) return null;
@@ -162,16 +174,16 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const y = Nz - 1 - j;
       for (let i = 0; i < Nr; i++) {
         const c = j * Nr + i;
-        let R = 244, G = 245, B = 247, A = 255;
+        let R = 244, G = 245, B = 247;
         if (!solid[c]) {
-          let v = Math.max(-1, Math.min(1, frame[c] * inv));
+          const v = Math.max(-1, Math.min(1, frame[c] * inv));
           const m = Math.sign(v) * Math.sqrt(Math.abs(v));
           if (m > 0) { R = 244; G = 245 - 205 * m; B = 247 - 225 * m; }
           else { R = 244 + 215 * m; G = 245 + 150 * m; B = 247; }
         }
         for (const x of [Nr - 1 + i, Nr - 1 - i]) {
           const o = (y * W + x) * 4;
-          data[o] = R; data[o + 1] = G; data[o + 2] = B; data[o + 3] = A;
+          data[o] = R; data[o + 1] = G; data[o + 2] = B; data[o + 3] = 255;
         }
       }
     }
@@ -206,65 +218,13 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     return { canvas: off, grid: g };
   }, [p.gridMask]);
 
-  // ---- hit testing -----------------------------------------------------------
-  const hitTest = useCallback((px: number, py: number): { sel: Selection; drag: Drag | null } => {
-    const v = viewRef.current;
-    const [xm, zm] = toMm(px, py, v);
-    const rm = Math.abs(xm);
-    const tol = HANDLE_PX / v.s;
-    const scene = p.scene;
-    const near = (a: Pt, b: Pt) => Math.hypot(a[0] - b[0], a[1] - b[1]) <= tol;
-    const cursor: Pt = [rm, zm];
+  // ---- shape access ------------------------------------------------------------
+  const nodesOf = useCallback((index: number): PathNode[] => shapeToPath(p.scene.shapes[index]).nodes, [p.scene]);
 
-    // Handles of the selected shape first.
-    if (p.selection?.kind === 'shape') {
-      const s = scene.shapes[p.selection.index];
-      if (s) {
-        const pts = shapeToPolygon(s);
-        for (let k = 0; k < pts.length; k++) {
-          if (near(pts[k], cursor)) return { sel: { kind: 'shape', index: p.selection.index, vertex: k }, drag: { kind: 'vertex', index: p.selection.index, vertex: k } };
-        }
-      }
-    }
-    // Driver end handles.
-    for (let k = scene.drivers.length - 1; k >= 0; k--) {
-      const { a, b } = driverSegment(scene.drivers[k]);
-      if (near(a, cursor)) return { sel: { kind: 'driver', index: k }, drag: { kind: 'driverEnd', index: k, end: 0 } };
-      if (near(b, cursor)) return { sel: { kind: 'driver', index: k }, drag: { kind: 'driverEnd', index: k, end: 1 } };
-    }
-    // Measurement handles.
-    {
-      const m = scene.measure;
-      if (near([0, m.zCenter + m.radius], cursor)) return { sel: { kind: 'measure' }, drag: { kind: 'measureRadius' } };
-      if (near([0, m.zCenter], cursor)) return { sel: { kind: 'measure' }, drag: { kind: 'measureCenter', startZ: zm, origZ: m.zCenter } };
-    }
-    // Drivers (segment).
-    for (let k = scene.drivers.length - 1; k >= 0; k--) {
-      const { a, b } = driverSegment(scene.drivers[k]);
-      if (distToSegment(cursor, a, b) <= tol) return { sel: { kind: 'driver', index: k }, drag: { kind: 'driver', index: k, orig: scene.drivers[k], start: cursor } };
-    }
-    // Shapes: topmost (last drawn) wins; interior or near an edge.
-    for (let k = scene.shapes.length - 1; k >= 0; k--) {
-      const pts = shapeToPolygon(scene.shapes[k]);
-      let hit = pointInPolygon(rm, zm, pts);
-      if (!hit) for (let i = 0; i < pts.length && !hit; i++) hit = distToSegment(cursor, pts[i], pts[(i + 1) % pts.length]) <= tol;
-      if (hit) return { sel: { kind: 'shape', index: k }, drag: { kind: 'shape', index: k, orig: pts.map((q) => [q[0], q[1]] as Pt), start: cursor } };
-    }
-    // Measurement arc line.
-    {
-      const m = scene.measure;
-      const d = Math.hypot(rm, zm - m.zCenter);
-      if (Math.abs(d - m.radius) <= tol) return { sel: { kind: 'measure' }, drag: { kind: 'measureRadius' } };
-    }
-    return { sel: null, drag: null };
-  }, [p.scene, p.selection, toMm]);
-
-  // ---- editing helpers -------------------------------------------------------
-  const updateShape = useCallback((index: number, pts: Pt[], commit: boolean) => {
+  const writeNodes = useCallback((index: number, nodes: PathNode[], commit: boolean) => {
     const shapes = p.scene.shapes.slice();
-    const s = shapes[index];
-    const poly: PolygonShape = { ...(s.kind === 'polygon' ? s : { kind: 'polygon', material: s.material, role: s.role, sigma: s.sigma, label: s.label }), kind: 'polygon', points: pts };
-    shapes[index] = poly;
+    const s = shapeToPath(shapes[index]);
+    shapes[index] = { ...s, nodes } as PathShape;
     p.onChange({ ...p.scene, shapes }, commit);
   }, [p]);
 
@@ -274,15 +234,72 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     p.onChange({ ...p.scene, drivers }, commit);
   }, [p]);
 
+  const addShape = useCallback((nodes: PathNode[]) => {
+    const shape: PathShape = { kind: 'path', nodes, material: 'rigid', role: 'housing', label: `shape ${p.scene.shapes.length + 1}` };
+    p.onChange({ ...p.scene, shapes: [...p.scene.shapes, shape] }, true);
+    p.onSelect({ kind: 'shape', index: p.scene.shapes.length });
+  }, [p]);
+
   const finishPen = useCallback(() => {
-    if (penPoints.length >= 3) {
-      const shape: PolygonShape = { kind: 'polygon', points: penPoints, material: 'rigid', role: 'housing', label: `shape ${p.scene.shapes.length + 1}` };
-      p.onChange({ ...p.scene, shapes: [...p.scene.shapes, shape] }, true);
-      p.onSelect({ kind: 'shape', index: p.scene.shapes.length });
-    }
-    setPenPoints([]);
+    if (penNodes.length >= 3) addShape(penNodes);
+    setPenNodes([]);
     p.onToolDone();
-  }, [penPoints, p]);
+  }, [penNodes, addShape, p]);
+
+  // ---- hit testing -----------------------------------------------------------
+  const hitTest = useCallback((px: number, py: number): { sel: Selection; drag: Drag | null } => {
+    const v = viewRef.current;
+    const [xm, zm] = toMm(px, py, v);
+    const rm = Math.abs(xm);
+    const tol = HANDLE_PX / v.s;
+    const scene = p.scene;
+    const near = (a: Pt | undefined, b: Pt) => !!a && Math.hypot(a[0] - b[0], a[1] - b[1]) <= tol;
+    const cursor: Pt = [rm, zm];
+
+    if (p.selection?.kind === 'shape' && scene.shapes[p.selection.index]) {
+      const idx = p.selection.index;
+      const nodes = nodesOf(idx);
+      const vi = p.selection.vertex;
+      // Handles of the selected anchor and the facing handles of its neighbours.
+      if (vi !== undefined && nodes[vi]) {
+        const n = nodes.length;
+        const cands: { node: number; which: 'in' | 'out'; pt?: Pt }[] = [
+          { node: vi, which: 'in', pt: nodes[vi].hIn }, { node: vi, which: 'out', pt: nodes[vi].hOut },
+          { node: (vi + n - 1) % n, which: 'out', pt: nodes[(vi + n - 1) % n].hOut },
+          { node: (vi + 1) % n, which: 'in', pt: nodes[(vi + 1) % n].hIn },
+        ];
+        for (const c of cands) if (near(c.pt, cursor)) return { sel: { kind: 'shape', index: idx, vertex: vi, handle: c.which }, drag: { kind: 'handle', index: idx, node: c.node, which: c.which } };
+      }
+      for (let k = 0; k < nodes.length; k++) {
+        if (near(nodes[k].p, cursor)) return { sel: { kind: 'shape', index: idx, vertex: k }, drag: { kind: 'anchor', index: idx, node: k, orig: cloneNode(nodes[k]), start: cursor } };
+      }
+    }
+    for (let k = scene.drivers.length - 1; k >= 0; k--) {
+      const { a, b } = driverSegment(scene.drivers[k]);
+      if (near(a, cursor)) return { sel: { kind: 'driver', index: k }, drag: { kind: 'driverEnd', index: k, end: 0 } };
+      if (near(b, cursor)) return { sel: { kind: 'driver', index: k }, drag: { kind: 'driverEnd', index: k, end: 1 } };
+    }
+    {
+      const m = scene.measure;
+      if (near([0, m.zCenter + m.radius], cursor)) return { sel: { kind: 'measure' }, drag: { kind: 'measureRadius' } };
+      if (near([0, m.zCenter], cursor)) return { sel: { kind: 'measure' }, drag: { kind: 'measureCenter', startZ: zm, origZ: m.zCenter } };
+    }
+    for (let k = scene.drivers.length - 1; k >= 0; k--) {
+      const { a, b } = driverSegment(scene.drivers[k]);
+      if (distToSegment(cursor, a, b) <= tol) return { sel: { kind: 'driver', index: k }, drag: { kind: 'driver', index: k, orig: scene.drivers[k], start: cursor } };
+    }
+    for (let k = scene.shapes.length - 1; k >= 0; k--) {
+      const pts = shapeToPolygon(scene.shapes[k]);
+      const nodes = nodesOf(k);
+      const hit = pointInPolygon(rm, zm, pts) || nearestOnPath(nodes, cursor).dist <= tol;
+      if (hit) return { sel: { kind: 'shape', index: k }, drag: { kind: 'shape', index: k, orig: cloneNodes(nodes), start: cursor } };
+    }
+    {
+      const m = scene.measure;
+      if (Math.abs(Math.hypot(rm, zm - m.zCenter) - m.radius) <= tol) return { sel: { kind: 'measure' }, drag: { kind: 'measureRadius' } };
+    }
+    return { sel: null, drag: null };
+  }, [p.scene, p.selection, toMm, nodesOf]);
 
   // ---- mouse -------------------------------------------------------------------
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -290,7 +307,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     e.currentTarget.focus();
     const v = viewRef.current;
-    if (e.button === 1 || e.button === 2 || e.altKey) {
+    if (e.button === 1 || e.button === 2 || (e.altKey && p.tool === 'select' && !p.selection)) {
       dragRef.current = { kind: 'pan', startPx: [px, py], origView: v };
       return;
     }
@@ -299,8 +316,10 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     if (!p.editable) { dragRef.current = { kind: 'pan', startPx: [px, py], origView: v }; return; }
 
     if (p.tool === 'pen') {
-      if (penPoints.length >= 3 && Math.hypot(penPoints[0][0] - Math.abs(xm), penPoints[0][1] - zm) <= HANDLE_PX / v.s) { finishPen(); return; }
-      setPenPoints([...penPoints, cur]);
+      if (penNodes.length >= 3 && Math.hypot(penNodes[0].p[0] - Math.abs(xm), penNodes[0].p[1] - zm) <= HANDLE_PX / v.s) { finishPen(); return; }
+      const next = [...penNodes, { p: cur } as PathNode];
+      setPenNodes(next);
+      dragRef.current = { kind: 'pen', node: next.length - 1, startPx: [px, py], dragged: false };
       return;
     }
     if (p.tool === 'rect') {
@@ -326,17 +345,33 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       case 'pan':
         setView({ s: d.origView.s, ox: d.origView.ox + (px - d.startPx[0]), oy: d.origView.oy + (py - d.startPx[1]) });
         break;
-      case 'vertex': {
-        const pts = shapeToPolygon(scene.shapes[d.index]).map((q) => [q[0], q[1]] as Pt);
-        pts[d.vertex] = [snapR(xm), snapV(zm)];
-        updateShape(d.index, pts, false);
+      case 'anchor': {
+        const nodes = cloneNodes(nodesOf(d.index));
+        const target: Pt = [snapR(xm), snapV(zm)];
+        nodes[d.node] = translateNode(d.orig, target[0] - d.orig.p[0], target[1] - d.orig.p[1]);
+        writeNodes(d.index, nodes, false);
+        break;
+      }
+      case 'handle': {
+        const nodes = cloneNodes(nodesOf(d.index));
+        const n = nodes[d.node];
+        const h: Pt = [Math.max(0, snapH(Math.abs(xm))), snapH(zm)];
+        const wasSmooth = isSmoothNode(n);
+        if (d.which === 'in') n.hIn = h; else n.hOut = h;
+        // Mirror the opposite handle (angle and length) unless Alt is held or the anchor was a corner.
+        if (!e.altKey && wasSmooth) {
+          const mirror: Pt = [Math.max(0, 2 * n.p[0] - h[0]), 2 * n.p[1] - h[1]];
+          if (d.which === 'in') n.hOut = mirror; else n.hIn = mirror;
+        }
+        nodes[d.node] = n;
+        writeNodes(d.index, nodes, false);
         break;
       }
       case 'shape': {
-        const minR = Math.min(...d.orig.map((q) => q[0]));
+        const minR = Math.min(...d.orig.flatMap((n) => [n.p[0], ...(n.hIn ? [n.hIn[0]] : []), ...(n.hOut ? [n.hOut[0]] : [])]));
         const dr = Math.max(-minR, snapV(Math.abs(xm) - d.start[0]));
         const dz = snapV(zm - d.start[1]);
-        updateShape(d.index, d.orig.map((q) => [q[0] + dr, q[1] + dz] as Pt), false);
+        writeNodes(d.index, d.orig.map((n) => translateNode(n, dr, dz)), false);
         break;
       }
       case 'driverEnd': {
@@ -373,6 +408,20 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         setRectDrag({ start: d.start, current: cur });
         break;
       }
+      case 'pen': {
+        // Click-drag on a new pen anchor pulls out symmetric handles (Figma/Illustrator behaviour).
+        if (!d.dragged && Math.hypot(px - d.startPx[0], py - d.startPx[1]) < 4) break;
+        d.dragged = true;
+        setPenNodes((prev) => {
+          const next = cloneNodes(prev);
+          const n = next[d.node];
+          const h: Pt = [Math.max(0, snapH(Math.abs(xm))), snapH(zm)];
+          n.hOut = h;
+          n.hIn = [Math.max(0, 2 * n.p[0] - h[0]), 2 * n.p[1] - h[1]];
+          return next;
+        });
+        break;
+      }
     }
   };
 
@@ -384,15 +433,12 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       setRectDrag(null);
       const r0 = Math.min(d.start[0], d.current[0]), r1 = Math.max(d.start[0], d.current[0]);
       const z0 = Math.min(d.start[1], d.current[1]), z1 = Math.max(d.start[1], d.current[1]);
-      if (r1 - r0 >= p.snap && z1 - z0 >= p.snap) {
-        const shape: PolygonShape = { kind: 'polygon', points: [[r0, z0], [r1, z0], [r1, z1], [r0, z1]], material: 'rigid', role: 'housing', label: `shape ${p.scene.shapes.length + 1}` };
-        p.onChange({ ...p.scene, shapes: [...p.scene.shapes, shape] }, true);
-        p.onSelect({ kind: 'shape', index: p.scene.shapes.length });
-      }
+      if (r1 - r0 >= p.snap && z1 - z0 >= p.snap) addShape([{ p: [r0, z0] }, { p: [r1, z0] }, { p: [r1, z1] }, { p: [r0, z1] }]);
       p.onToolDone();
       return;
     }
-    if (d.kind !== 'pan') p.onChange(p.scene, true);
+    if (d.kind === 'pen' || d.kind === 'pan') return;
+    p.onChange(p.scene, true);
   };
 
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -401,30 +447,47 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     const v = viewRef.current;
     const [xm, zm] = toMm(e.clientX - rect.left, e.clientY - rect.top, v);
     const cur: Pt = [Math.abs(xm), zm];
-    const pts = shapeToPolygon(p.scene.shapes[p.selection.index]).map((q) => [q[0], q[1]] as Pt);
+    const idx = p.selection.index;
+    const nodes = cloneNodes(nodesOf(idx));
     const tol = HANDLE_PX / v.s;
-    for (let i = 0; i < pts.length; i++) {
-      const a = pts[i], b = pts[(i + 1) % pts.length];
-      if (distToSegment(cur, a, b) <= tol) {
-        pts.splice(i + 1, 0, [snapR(cur[0]), snapV(cur[1])]);
-        updateShape(p.selection.index, pts, true);
-        p.onSelect({ kind: 'shape', index: p.selection.index, vertex: i + 1 });
+    // Double-click an anchor: toggle corner <-> smooth.
+    for (let k = 0; k < nodes.length; k++) {
+      if (Math.hypot(nodes[k].p[0] - cur[0], nodes[k].p[1] - cur[1]) <= tol) {
+        nodes[k] = nodes[k].hIn || nodes[k].hOut ? cornerNode(nodes[k]) : smoothNode(nodes, k);
+        writeNodes(idx, nodes, true);
+        p.onSelect({ kind: 'shape', index: idx, vertex: k });
         return;
       }
+    }
+    // Double-click a segment: insert an anchor without changing the curve.
+    const hit = nearestOnPath(nodes, cur);
+    if (hit.dist <= tol) {
+      const a = nodes[hit.seg], b = nodes[(hit.seg + 1) % nodes.length];
+      const { a: na, mid, b: nb } = splitSegment(a, b, hit.t);
+      nodes[hit.seg] = na; nodes[(hit.seg + 1) % nodes.length] = nb;
+      if (segmentIsLine(a, b)) mid.p = [snapR(mid.p[0]), snapV(mid.p[1])];
+      nodes.splice(hit.seg + 1, 0, mid);
+      writeNodes(idx, nodes, true);
+      p.onSelect({ kind: 'shape', index: idx, vertex: hit.seg + 1 });
     }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
-    if (e.key === 'Escape') { setPenPoints([]); if (p.tool !== 'select') p.onToolDone(); else p.onSelect(null); return; }
+    if (e.key === 'Escape') { setPenNodes([]); if (p.tool !== 'select') p.onToolDone(); else p.onSelect(null); return; }
     if (e.key === 'Enter' && p.tool === 'pen') { finishPen(); return; }
     if ((e.key === 'Delete' || e.key === 'Backspace') && p.editable && p.selection) {
       e.preventDefault();
       const sel = p.selection;
       if (sel.kind === 'shape') {
-        const pts = shapeToPolygon(p.scene.shapes[sel.index]).map((q) => [q[0], q[1]] as Pt);
-        if (sel.vertex !== undefined && pts.length > 3) {
-          pts.splice(sel.vertex, 1);
-          updateShape(sel.index, pts, true);
+        const nodes = cloneNodes(nodesOf(sel.index));
+        if (sel.vertex !== undefined && sel.handle) {
+          const n = nodes[sel.vertex];
+          if (sel.handle === 'in') delete n.hIn; else delete n.hOut;
+          writeNodes(sel.index, nodes, true);
+          p.onSelect({ kind: 'shape', index: sel.index, vertex: sel.vertex });
+        } else if (sel.vertex !== undefined && nodes.length > 3) {
+          nodes.splice(sel.vertex, 1);
+          writeNodes(sel.index, nodes, true);
           p.onSelect({ kind: 'shape', index: sel.index });
         } else {
           p.onChange({ ...p.scene, shapes: p.scene.shapes.filter((_, i) => i !== sel.index) }, true);
@@ -452,13 +515,11 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     ctx.fillStyle = '#eef0f3';
     ctx.fillRect(0, 0, size.w, size.h);
 
-    // Domain and sponge.
     const dom = scene.domain;
     const [dx0, dy0] = P(-dom.rMax, dom.zMax), [dx1, dy1] = P(dom.rMax, dom.zMin);
     ctx.fillStyle = '#f6f7f9';
     ctx.fillRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
 
-    // Field.
     if (fieldImage) {
       const g = fieldImage.grid;
       const [fx, fy] = P(-(g.Nr - 1) * g.dx, g.zMin + (g.Nz - 1) * g.dx);
@@ -467,7 +528,6 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.drawImage(fieldImage.canvas, fx, fy, (2 * g.Nr - 2) * g.dx * v.s, (g.Nz - 1) * g.dx * v.s);
     }
 
-    // Sponge band (drawn over the field so it reads as "not trusted here").
     const sp = p.spongeMm;
     ctx.fillStyle = 'rgba(120,125,135,0.10)';
     const [sx0, sy0] = P(-dom.rMax + sp, dom.zMax - sp), [sx1, sy1] = P(dom.rMax - sp, dom.zMin + sp);
@@ -478,12 +538,38 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     ctx.strokeStyle = '#c9cdd4'; ctx.lineWidth = 1; ctx.setLineDash([]);
     ctx.strokeRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
 
-    // Axis.
     ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.setLineDash([6, 4]);
     ctx.beginPath(); ctx.moveTo(P(0, dom.zMin)[0], dy0); ctx.lineTo(P(0, dom.zMin)[0], dy1); ctx.stroke();
     ctx.setLineDash([]);
 
-    // Geometry layer: solids and fabric, then slots cut through them.
+    // Path drawing helper: true Bézier segments, optionally mirrored.
+    const pathNodes = (g: CanvasRenderingContext2D, nodes: PathNode[], mirror: boolean) => {
+      const m = mirror ? -1 : 1;
+      g.beginPath();
+      nodes.forEach((n, i) => {
+        const [x, y] = P(m * n.p[0], n.p[1]);
+        if (i === 0) { g.moveTo(x, y); return; }
+        const prev = nodes[i - 1];
+        if (segmentIsLine(prev, n)) g.lineTo(x, y);
+        else {
+          const c1 = prev.hOut ?? prev.p, c2 = n.hIn ?? n.p;
+          const [x1, y1] = P(m * c1[0], c1[1]), [x2, y2] = P(m * c2[0], c2[1]);
+          g.bezierCurveTo(x1, y1, x2, y2, x, y);
+        }
+      });
+      const last = nodes[nodes.length - 1], first = nodes[0];
+      if (last && first) {
+        const [x, y] = P(m * first.p[0], first.p[1]);
+        if (segmentIsLine(last, first)) g.lineTo(x, y);
+        else {
+          const c1 = last.hOut ?? last.p, c2 = first.hIn ?? first.p;
+          const [x1, y1] = P(m * c1[0], c1[1]), [x2, y2] = P(m * c2[0], c2[1]);
+          g.bezierCurveTo(x1, y1, x2, y2, x, y);
+        }
+      }
+      g.closePath();
+    };
+
     if (!layerRef.current) layerRef.current = document.createElement('canvas');
     const layer = layerRef.current;
     layer.width = size.w * dpr; layer.height = size.h * dpr;
@@ -491,20 +577,15 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     L.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (!hatchRef.current) hatchRef.current = makeHatch();
 
-    const pathPoly = (g: CanvasRenderingContext2D, pts: Pt[], mirror: boolean) => {
-      g.beginPath();
-      pts.forEach((q, i) => { const [x, y] = P(mirror ? -q[0] : q[0], q[1]); i === 0 ? g.moveTo(x, y) : g.lineTo(x, y); });
-      g.closePath();
-    };
+    const shapeNodes = scene.shapes.map((s) => shapeToPath(s).nodes);
     const order = scene.shapes.map((s, i) => ({ s, i })).sort((a, b) => {
       const rank = (x: typeof a) => (x.s.material === 'air' ? 2 : x.s.material === 'fabric' ? 1 : 0);
       return rank(a) - rank(b);
     });
-    for (const { s } of order) {
+    for (const { s, i } of order) {
       const role = roleOf(s);
-      const pts = shapeToPolygon(s);
       for (const mirror of [false, true]) {
-        pathPoly(L, pts, mirror);
+        pathNodes(L, shapeNodes[i], mirror);
         if (s.material === 'air') {
           L.save(); L.globalCompositeOperation = 'destination-out'; L.fillStyle = '#000'; L.fill(); L.restore();
           L.fillStyle = ROLE_COLORS.slot.fill; L.fill();
@@ -518,7 +599,6 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     }
     ctx.drawImage(layer, 0, 0, size.w, size.h);
 
-    // Solver grid mask.
     if (maskImage) {
       const g = maskImage.grid;
       const [fx, fy] = P(-(g.Nr - 1) * g.dx, g.zMin + (g.Nz - 1) * g.dx);
@@ -529,17 +609,14 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     // Drivers.
     scene.drivers.forEach((d) => {
       const { a, b, dir } = driverSegment(d);
-      for (const mirror of [false, true]) {
-        const m = mirror ? -1 : 1;
+      for (const m of [1, -1]) {
         const [ax, ay] = P(m * a[0], a[1]), [bx, by] = P(m * b[0], b[1]);
-        // Membrane body (2 mm behind the face).
         const back: Pt = [-dir[0] * 2, -dir[1] * 2];
         const [cx, cy] = P(m * (a[0] + back[0]), a[1] + back[1]), [ex, ey] = P(m * (b[0] + back[0]), b[1] + back[1]);
         ctx.fillStyle = 'rgba(224,36,94,0.25)';
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(ex, ey); ctx.lineTo(cx, cy); ctx.closePath(); ctx.fill();
         ctx.strokeStyle = DRIVER_COLOR; ctx.lineWidth = 3.5;
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-        // Direction arrows.
         const n = Math.max(1, Math.floor(Math.hypot(bx - ax, by - ay) / 26));
         for (let k = 0; k < n; k++) {
           const t = (k + 0.5) / n;
@@ -564,9 +641,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.strokeStyle = MEASURE_COLOR; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
       const a0 = -Math.PI / 2, a1 = -Math.PI / 2 + (angleMax * Math.PI) / 180;
       ctx.beginPath(); ctx.arc(cx, cy, R, a0, a1); ctx.stroke();
-      ctx.beginPath(); ctx.arc(cx, cy, R, Math.PI - a1 - Math.PI, Math.PI - a0 - Math.PI, true); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, R, -a1 - Math.PI, -a0 - Math.PI, true); ctx.stroke();
       ctx.setLineDash([]);
-      // Probe dots.
       ctx.fillStyle = MEASURE_COLOR;
       for (let a = 0; a <= angleMax + 1e-9; a += m.angleStep) {
         const th = (a * Math.PI) / 180;
@@ -578,12 +654,11 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.beginPath(); ctx.moveTo(cx - 6, cy); ctx.lineTo(cx + 6, cy); ctx.moveTo(cx, cy - 6); ctx.lineTo(cx, cy + 6); ctx.stroke();
     }
 
-    // Diagnostics: red outlines and markers.
-    const bad = p.diagnostics.filter((d) => d.severity === 'error');
-    for (const d of bad) {
+    // Diagnostics.
+    for (const d of p.diagnostics.filter((x) => x.severity === 'error')) {
       ctx.strokeStyle = ERROR_COLOR; ctx.lineWidth = 2.5; ctx.setLineDash([5, 3]);
       if (d.target?.kind === 'shape' && scene.shapes[d.target.index]) {
-        for (const mirror of [false, true]) { pathPoly(ctx, shapeToPolygon(scene.shapes[d.target.index]), mirror); ctx.stroke(); }
+        for (const mirror of [false, true]) { pathNodes(ctx, shapeNodes[d.target.index], mirror); ctx.stroke(); }
       } else if (d.target?.kind === 'driver' && scene.drivers[d.target.index]) {
         const { a, b } = driverSegment(scene.drivers[d.target.index]);
         for (const m of [1, -1]) { const [ax, ay] = P(m * a[0], a[1]), [bx, by] = P(m * b[0], b[1]); ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); }
@@ -602,9 +677,9 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       }
     }
 
-    // Selection.
+    // Selection: outline, anchors, handles.
     const sel = p.selection;
-    const handle = (r: number, z: number, filled: boolean) => {
+    const square = (r: number, z: number, filled: boolean) => {
       for (const m of [1, -1]) {
         const [x, y] = P(m * r, z);
         ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8);
@@ -612,27 +687,66 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
       }
     };
+    const circle = (r: number, z: number, filled: boolean) => {
+      for (const m of [1, -1]) {
+        const [x, y] = P(m * r, z);
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = filled ? SELECT_COLOR : '#fff'; ctx.fill();
+        ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+    };
+    const handleLine = (from: Pt, to: Pt) => {
+      for (const m of [1, -1]) {
+        const [x0, y0] = P(m * from[0], from[1]), [x1, y1] = P(m * to[0], to[1]);
+        ctx.strokeStyle = 'rgba(47,111,228,0.7)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      }
+    };
     if (sel?.kind === 'shape' && scene.shapes[sel.index]) {
-      const pts = shapeToPolygon(scene.shapes[sel.index]);
+      const nodes = shapeNodes[sel.index];
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2;
-      for (const mirror of [false, true]) { pathPoly(ctx, pts, mirror); ctx.stroke(); }
-      pts.forEach((q, k) => handle(q[0], q[1], sel.vertex === k));
+      for (const mirror of [false, true]) { pathNodes(ctx, nodes, mirror); ctx.stroke(); }
+      if (sel.vertex !== undefined && nodes[sel.vertex]) {
+        const n = nodes.length, vi = sel.vertex;
+        const show: { node: number; which: 'in' | 'out' }[] = [
+          { node: vi, which: 'in' }, { node: vi, which: 'out' },
+          { node: (vi + n - 1) % n, which: 'out' }, { node: (vi + 1) % n, which: 'in' },
+        ];
+        for (const s of show) {
+          const nd = nodes[s.node];
+          const h = s.which === 'in' ? nd.hIn : nd.hOut;
+          if (!h) continue;
+          handleLine(nd.p, h);
+          circle(h[0], h[1], s.node === vi && sel.handle === s.which);
+        }
+      }
+      nodes.forEach((nd, k) => square(nd.p[0], nd.p[1], sel.vertex === k && !sel.handle));
     } else if (sel?.kind === 'driver' && scene.drivers[sel.index]) {
       const { a, b } = driverSegment(scene.drivers[sel.index]);
-      handle(a[0], a[1], false); handle(b[0], b[1], false);
+      square(a[0], a[1], false); square(b[0], b[1], false);
     } else if (sel?.kind === 'measure') {
       const m = scene.measure;
-      handle(0, m.zCenter + m.radius, false); handle(0, m.zCenter, true);
+      square(0, m.zCenter + m.radius, false); square(0, m.zCenter, true);
     }
 
-    // Pen / rect previews.
-    if (p.tool === 'pen' && penPoints.length > 0) {
+    // Pen preview.
+    if (p.tool === 'pen' && penNodes.length > 0) {
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+      const preview: PathNode[] = mouseMm ? [...penNodes, { p: [snapR(mouseMm[0]), snapV(mouseMm[1])] }] : penNodes;
       ctx.beginPath();
-      penPoints.forEach((q, i) => { const [x, y] = P(q[0], q[1]); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
-      if (mouseMm) { const [x, y] = P(snapR(mouseMm[0]), snapV(mouseMm[1])); ctx.lineTo(x, y); }
+      preview.forEach((n, i) => {
+        const [x, y] = P(n.p[0], n.p[1]);
+        if (i === 0) { ctx.moveTo(x, y); return; }
+        const prev = preview[i - 1];
+        if (segmentIsLine(prev, n)) ctx.lineTo(x, y);
+        else { const c1 = prev.hOut ?? prev.p, c2 = n.hIn ?? n.p; const [x1, y1] = P(c1[0], c1[1]), [x2, y2] = P(c2[0], c2[1]); ctx.bezierCurveTo(x1, y1, x2, y2, x, y); }
+      });
       ctx.stroke(); ctx.setLineDash([]);
-      penPoints.forEach((q, i) => handle(q[0], q[1], i === 0));
+      penNodes.forEach((n, i) => {
+        square(n.p[0], n.p[1], i === 0);
+        if (n.hOut) { handleLine(n.p, n.hOut); circle(n.hOut[0], n.hOut[1], false); }
+        if (n.hIn) { handleLine(n.p, n.hIn); circle(n.hIn[0], n.hIn[1], false); }
+      });
     }
     if (rectDrag) {
       const [x0, y0] = P(rectDrag.start[0], rectDrag.start[1]), [x1, y1] = P(rectDrag.current[0], rectDrag.current[1]);
@@ -640,14 +754,13 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)); ctx.setLineDash([]);
     }
 
-    // Scale bar and cursor readout.
     const barMm = v.s > 12 ? 5 : v.s > 4 ? 10 : v.s > 1.2 ? 50 : 100;
     ctx.strokeStyle = '#222'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(12, size.h - 14); ctx.lineTo(12 + barMm * v.s, size.h - 14); ctx.stroke();
     ctx.fillStyle = '#222'; ctx.font = '11px system-ui';
     ctx.fillText(`${barMm} mm`, 12, size.h - 18);
     if (mouseMm) ctx.fillText(`r ${mouseMm[0].toFixed(1)}  z ${mouseMm[1].toFixed(1)} mm`, size.w - 150, size.h - 8);
-  }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penPoints, mouseMm, rectDrag, toPx, snapR, snapV]);
+  }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, toPx, snapR, snapV]);
 
   const cursor = p.tool === 'pen' || p.tool === 'rect' ? 'crosshair' : dragRef.current?.kind === 'pan' ? 'grabbing' : 'default';
 

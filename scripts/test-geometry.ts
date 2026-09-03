@@ -1,8 +1,11 @@
 /** Geometry helper and conflict-check tests. Run with: npm test */
 import assert from 'node:assert/strict';
 import {
-  polygonSelfIntersection, polygonArea, polygonsOverlap, normalizeScene, checkGeometry, asAxisAlignedRect, type Pt,
+  polygonSelfIntersection, polygonArea, polygonsOverlap, normalizeScene, checkGeometry, asAxisAlignedRect,
+  bezierPoint, flattenPath, splitSegment, smoothNode, isSmoothNode, shapeToPath, FLATTEN_STEP, type Pt,
 } from '../src/engine/geometry';
+import { parsePathD, sceneToSvg } from '../src/engine/svg';
+import type { PathNode } from '../src/engine/scene';
 import { buildGrid } from '../src/engine/rasterize';
 import { diagnose } from '../src/engine/runner';
 import { hasErrors } from '../src/engine/checks';
@@ -47,7 +50,7 @@ async function main() {
   await test('normalised presets carry roles and pass all checks', () => {
     for (const [k, mk] of Object.entries(PRESETS)) {
       const s = normalizeScene(mk());
-      assert.ok(s.shapes.every((sh) => sh.kind === 'polygon' && sh.role), k);
+      assert.ok(s.shapes.every((sh) => sh.kind === 'path' && sh.role), k);
       assert.ok(!hasErrors(diagnose(s, DEFAULT_PARAMS)), `${k}: ${codes(diagnose(s, DEFAULT_PARAMS), 'error')}`);
     }
   });
@@ -68,7 +71,7 @@ async function main() {
   await test('slot that cuts no wall warns; degenerate and self-intersecting polygons error', () => {
     const s = normalizeScene(sideRadialScene());
     const slot = s.shapes.findIndex((x) => x.role === 'slot');
-    (s.shapes[slot] as { points: Pt[] }).points = [[60, 0], [70, 0], [70, 10], [60, 10]];
+    (s.shapes[slot] as { nodes: PathNode[] }).nodes = [{ p: [60, 0] }, { p: [70, 0] }, { p: [70, 10] }, { p: [60, 10] }];
     assert.ok(codes(checkGeometry(s), 'warning').includes('slot-no-wall'));
     s.shapes.push({ kind: 'polygon', points: [[0, 100], [10, 110], [10, 100], [0, 110]], material: 'rigid', role: 'other' });
     s.shapes.push({ kind: 'polygon', points: [[0, 120], [10, 120], [20, 120]], material: 'rigid', role: 'other' });
@@ -77,6 +80,69 @@ async function main() {
   });
   await test('a clean scene has no geometry diagnostics', () => {
     assert.deepEqual(checkGeometry(normalizeScene(sideRadialScene())), []);
+  });
+
+  console.log('bezier paths');
+  await test('flattened curve lies on the true curve with chords no longer than the step', () => {
+    const nodes: PathNode[] = [
+      { p: [0, 0], hOut: [10, 0] }, { p: [20, 10], hIn: [20, 0], hOut: [20, 20] }, { p: [0, 20], hIn: [10, 20] },
+    ];
+    const pts = flattenPath(nodes);
+    assert.ok(pts.length > 30, 'curve is subdivided');
+    for (const q of pts) {
+      let best = Infinity;
+      for (let i = 0; i < nodes.length; i++) {
+        const a = nodes[i], b = nodes[(i + 1) % nodes.length];
+        const c1 = a.hOut ?? a.p, c2 = b.hIn ?? b.p;
+        for (let k = 0; k <= 400; k++) {
+          const x = bezierPoint(a.p, c1, c2, b.p, k / 400);
+          best = Math.min(best, Math.hypot(x[0] - q[0], x[1] - q[1]));
+        }
+      }
+      assert.ok(best < 0.05, `point off-curve by ${best}`);
+    }
+    for (let i = 1; i < pts.length; i++) {
+      assert.ok(Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) <= FLATTEN_STEP * 1.6);
+    }
+  });
+  await test('splitting a segment preserves the curve and yields a smooth anchor', () => {
+    const a: PathNode = { p: [0, 0], hOut: [10, 0] }, b: PathNode = { p: [20, 10], hIn: [20, 0] };
+    const { a: na, mid, b: nb } = splitSegment(a, b, 0.37);
+    const before = flattenPath([a, b, { p: [0, 10] }], 0.1);
+    const after = flattenPath([na, mid, nb, { p: [0, 10] }], 0.1);
+    for (const q of after) {
+      const d = Math.min(...before.map((x) => Math.hypot(x[0] - q[0], x[1] - q[1])));
+      assert.ok(d < 0.15, `split moved the curve by ${d}`);
+    }
+    assert.ok(isSmoothNode(mid));
+  });
+  await test('smoothing gives mirrored handles; a straight rect flattens to its 4 corners', () => {
+    const sq: PathNode[] = [{ p: [0, 0] }, { p: [10, 0] }, { p: [10, 10] }, { p: [0, 10] }];
+    assert.ok(isSmoothNode(smoothNode(sq, 1)));
+    assert.deepEqual(flattenPath(sq), [[0, 0], [10, 0], [10, 10], [0, 10]]);
+    assert.deepEqual(shapeToPath({ kind: 'rect', r: [0, 10], z: [0, 10], material: 'rigid' }).nodes.map((n) => n.p), [[0, 0], [10, 0], [10, 10], [0, 10]]);
+  });
+  await test('SVG export writes cubic paths that parse back to the same anchors and handles', () => {
+    const s = normalizeScene(sideRadialScene());
+    const refl = s.shapes.findIndex((x) => x.role === 'reflector');
+    const rs = shapeToPath(s.shapes[refl]);
+    rs.nodes = rs.nodes.map((_, i) => smoothNode(rs.nodes, i));
+    s.shapes[refl] = rs;
+    const svg = sceneToSvg(s);
+    const d = svg.match(/id="reflector_cone"[^>]*d="([^"]+)"/)?.[1];
+    assert.ok(d && d.includes(' C '), 'reflector exported as a cubic path');
+    const back = parsePathD(d!)[0];
+    assert.equal(back.length, rs.nodes.length);
+    const same = (a?: Pt, b?: Pt) => (!a && !b) || (!!a && !!b && Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-3);
+    back.forEach((n, i) => {
+      const o = rs.nodes[i];
+      assert.ok(same(n.p, o.p), `anchor ${i}`);
+      assert.ok(same(n.hIn, o.hIn), `hIn ${i}`);
+      assert.ok(same(n.hOut, o.hOut), `hOut ${i}`);
+    });
+    assert.ok(rs.nodes.some((n) => n.hIn && n.hOut), 'at least one fully smooth anchor round-trips');
+    assert.equal(parsePathD('M 0 0 L 10 0 L 10 -10 Z')[0].length, 3);
+    assert.deepEqual(parsePathD('m 5 5 l 10 0 v 10 h -10 z')[0].map((n) => n.p), [[5, -5], [15, -5], [15, -15], [5, -15]]);
   });
 
   console.log(`\n${passed} passed${process.exitCode ? ', some FAILED' : ''}`);

@@ -3,14 +3,14 @@ import { compareBackends, runSimulation, type BackendUsed, type ParityReport } f
 import type { Diagnostic } from '../engine/checks';
 import type { Scene, SimParams } from '../engine/scene';
 import {
-  MODELS, optimize, simParamsFor,
+  MODELS, SCENE_MODEL_ID, makeSceneModel, optimize, simParamsFor,
   type Candidate, type DesignVariable, type OptimizeProgress, type OptimizeSettings,
 } from '../engine/optimize';
 
 export type WorkerIn =
   | { type: 'run'; scene: Scene; params: SimParams; frameEvery: number }
   | { type: 'parity'; scene: Scene; params: SimParams }
-  | { type: 'optimize'; modelId: string; variables: DesignVariable[]; settings: OptimizeSettings; backend: SimParams['backend'] }
+  | { type: 'optimize'; modelId: string; baseScene?: Scene; variables: DesignVariable[]; settings: OptimizeSettings; backend: SimParams['backend'] }
   | { type: 'stop' };
 
 export type WorkerOut =
@@ -55,7 +55,7 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
   if (msg.type === 'optimize') {
     stopRequested = false;
     const t0 = performance.now();
-    const model = MODELS[msg.modelId];
+    const model = msg.modelId === SCENE_MODEL_ID && msg.baseScene ? makeSceneModel(msg.baseScene) : MODELS[msg.modelId];
     if (!model) { post({ type: 'error', message: `알 수 없는 모델: ${msg.modelId}` }); return; }
     const params: SimParams = { ...simParamsFor(msg.settings), backend: msg.backend };
     try {

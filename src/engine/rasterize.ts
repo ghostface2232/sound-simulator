@@ -1,5 +1,5 @@
 import type { Scene, Shape } from './scene';
-import { pointInPolygon, polygonBounds, asAxisAlignedRect } from './geometry';
+import { pointInPolygon, polygonBounds, asAxisAlignedRect, shapeToPolygon } from './geometry';
 
 /** Grid data produced from a Scene, ready for the solver. */
 export interface BuiltGrid {
@@ -35,10 +35,11 @@ function rasterShape(
   const half = conservative ? dx * 0.5 : 0;
 
   // Axis-aligned polygons (the editor form of a rect) take the exact rect path so both forms rasterise identically.
+  const poly = s.kind === 'rect' ? null : shapeToPolygon(s);
   const rectBounds = s.kind === 'rect'
     ? { r0: Math.min(...s.r), r1: Math.max(...s.r), z0: Math.min(...s.z), z1: Math.max(...s.z) }
-    : asAxisAlignedRect(s.points);
-  const b = rectBounds ?? polygonBounds((s as { points: [number, number][] }).points);
+    : asAxisAlignedRect(poly!);
+  const b = rectBounds ?? polygonBounds(poly!);
   const asRect = rectBounds !== null;
 
   const i0 = Math.max(0, Math.floor((b.r0 - half) / dx));
@@ -54,7 +55,7 @@ function rasterShape(
       if (asRect) {
         hit = r + half > b.r0 && r - half < b.r1 && z + half > b.z0 && z - half < b.z1;
       } else {
-        const pts = (s as { points: [number, number][] }).points;
+        const pts = poly!;
         hit = conservative
           ? pointInPolygon(r, z, pts) ||
             pointInPolygon(r - half, z - half, pts) || pointInPolygon(r + half, z - half, pts) ||

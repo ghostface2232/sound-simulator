@@ -7,8 +7,8 @@ import { hasErrors, type Diagnostic } from './engine/checks';
 import { normalizeScene } from './engine/geometry';
 import { buildGrid } from './engine/rasterize';
 import {
-  DEFAULT_OPTIMIZE, MODELS, SIDE_RADIAL_MODEL,
-  type Candidate, type DesignVariable, type OptimizeProgress, type OptimizeSettings,
+  DEFAULT_OPTIMIZE, MODELS, SCENE_MODEL_ID, makeSceneModel,
+  type Candidate, type DesignVariable, type OptimizeProgress, type OptimizeSettings, type ParametricModel,
 } from './engine/optimize';
 import type { WorkerIn, WorkerOut } from './worker/sim.worker';
 import { SectionCanvas, type GridInfo, type SectionCanvasHandle, type Selection, type Tool } from './ui/SectionCanvas';
@@ -62,9 +62,11 @@ export default function App() {
   const [historyTick, setHistoryTick] = useState(0);
 
   // Optimisation state.
-  const [modelId, setModelId] = useState<string>(SIDE_RADIAL_MODEL.id);
-  const model = MODELS[modelId];
-  const [variables, setVariables] = useState<DesignVariable[]>(() => model.variables.map((v) => ({ ...v })));
+  const [modelId, setModelId] = useState<string>(SCENE_MODEL_ID);
+  /** Scene the optimisation starts from: captured from the editor when entering the tab or on refresh. */
+  const [optBase, setOptBase] = useState<Scene>(scene);
+  const model = useMemo<ParametricModel>(() => (modelId === SCENE_MODEL_ID ? makeSceneModel(optBase) : MODELS[modelId]), [modelId, optBase]);
+  const [variables, setVariables] = useState<DesignVariable[]>(() => makeSceneModel(scene).variables.map((v) => ({ ...v })));
   const [optSettings, setOptSettings] = useState<OptimizeSettings>(DEFAULT_OPTIMIZE);
   const [optRunning, setOptRunning] = useState(false);
   const [optProgress, setOptProgress] = useState<OptimizeProgress | null>(null);
@@ -74,7 +76,7 @@ export default function App() {
   const [optScene, setOptScene] = useState<Scene | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
-  const modelRef = useRef(modelId); modelRef.current = modelId;
+  const modelRef = useRef(model); modelRef.current = model;
   const peakRef = useRef(0);
 
   /** Scene updates: commit=true records an undo step. */
@@ -156,7 +158,7 @@ export default function App() {
           setParity(m.report); setParityBusy(false);
           break;
         case 'opt-eval':
-          setOptScene(normalizeScene(MODELS[modelRef.current].build(m.candidate.params)));
+          setOptScene(normalizeScene(modelRef.current.build(m.candidate.params)));
           break;
         case 'opt-progress':
           setOptProgress(m.progress);
@@ -164,7 +166,7 @@ export default function App() {
         case 'opt-done':
           setOptProgress((prev) => ({ done: prev?.total ?? m.ranked.length, total: prev?.total ?? m.ranked.length, best: m.ranked[0] ?? null, ranked: m.ranked }));
           setOptElapsed(m.elapsedMs); setOptRunning(false);
-          if (m.ranked[0]) setOptScene(normalizeScene(MODELS[modelRef.current].build(m.ranked[0].params)));
+          if (m.ranked[0]) setOptScene(normalizeScene(modelRef.current.build(m.ranked[0].params)));
           setSelected(new Set(m.ranked.filter((c, i) => i === 0 || c.origin === 'baseline').map((c) => c.id)));
           break;
         case 'stopped':
@@ -216,19 +218,45 @@ export default function App() {
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
   }, []);
 
+  /** Rebuild the variable table from a model, keeping ranges the user already edited for matching keys. */
+  const adoptVariables = useCallback((m: ParametricModel) => {
+    setVariables((prev) => m.variables.map((v) => {
+      const old = prev.find((o) => o.key === v.key);
+      return old ? { ...v, min: old.min, max: old.max, enabled: old.enabled } : { ...v };
+    }));
+  }, []);
+
   const changeModel = useCallback((id: string) => {
     setModelId(id);
-    setVariables(MODELS[id].variables.map((v) => ({ ...v })));
+    const m = id === SCENE_MODEL_ID ? makeSceneModel(scene) : MODELS[id];
+    if (id === SCENE_MODEL_ID) setOptBase(scene);
+    setVariables(m.variables.map((v) => ({ ...v })));
+    setOptSettings((s) => ({ ...s, explore: id === SCENE_MODEL_ID ? 'local' : 'global' }));
     setOptProgress(null); setSelected(new Set()); setOptElapsed(null); setOptScene(null);
-  }, []);
+  }, [scene]);
+
+  /** Take the editor scene as the new optimisation baseline. */
+  const refreshBase = useCallback(() => {
+    setOptBase(scene);
+    if (modelId === SCENE_MODEL_ID) adoptVariables(makeSceneModel(scene));
+    setOptProgress(null); setSelected(new Set()); setOptElapsed(null); setOptScene(null);
+  }, [scene, modelId, adoptVariables]);
+
+  const enterMode = useCallback((m: Mode) => {
+    if (m === 'opt' && !optRunning && scene !== optBase) refreshBase();
+    setMode(m);
+  }, [optRunning, scene, optBase, refreshBase]);
 
   const startOptimize = useCallback(() => {
     if (!workerRef.current) return;
     setOptRunning(true); setOptProgress(null); setOptElapsed(null); setSelected(new Set()); setMessage('');
     setResult(null); setFrame(null); setGrid(null);
-    const msg: WorkerIn = { type: 'optimize', modelId: model.id, variables, settings: optSettings, backend: params.backend ?? 'auto' };
+    const msg: WorkerIn = {
+      type: 'optimize', modelId: model.id, baseScene: model.id === SCENE_MODEL_ID ? optBase : undefined,
+      variables, settings: optSettings, backend: params.backend ?? 'auto',
+    };
     workerRef.current.postMessage(msg);
-  }, [model, variables, optSettings, params.backend]);
+  }, [model, optBase, variables, optSettings, params.backend]);
 
   const previewCandidate = useCallback((c: Candidate) => {
     setOptScene(normalizeScene(model.build(c.params)));
@@ -240,9 +268,11 @@ export default function App() {
 
   const applyCandidate = useCallback((c: Candidate) => {
     const s = normalizeScene(model.build(c.params));
-    s.description = `${s.description ?? ''} [최적화 후보 #${c.id}, 점수 ${c.score.toFixed(2)}]`;
-    setPresetKey('side-radial');
+    s.description = `${(s.description ?? '').replace(/ \[최적화 후보[^\]]*\]/g, '')} [최적화 후보 #${c.id}, 점수 ${c.score.toFixed(2)}]`;
+    if (model.id !== SCENE_MODEL_ID) setPresetKey('side-radial');
     resetScene(s);
+    // The applied candidate becomes the next baseline, so edit -> optimise -> apply can be repeated.
+    setOptBase(s);
     setMode('sim');
     setTimeout(() => canvasRef.current?.fitDevice(), 0);
   }, [model, resetScene]);
@@ -274,8 +304,8 @@ export default function App() {
       <aside className="panel left">
         <h1>Speaker Sim <span className="sub">axisymmetric FDTD</span></h1>
         <div className="modes">
-          <button className={mode === 'sim' ? 'active' : ''} onClick={() => setMode('sim')}>시뮬레이션</button>
-          <button className={mode === 'opt' ? 'active' : ''} onClick={() => setMode('opt')}>리플렉터 최적화</button>
+          <button className={mode === 'sim' ? 'active' : ''} onClick={() => enterMode('sim')}>시뮬레이션</button>
+          <button className={mode === 'opt' ? 'active' : ''} onClick={() => enterMode('opt')}>리플렉터 최적화</button>
         </div>
 
         {mode === 'sim' ? (
@@ -351,6 +381,7 @@ export default function App() {
           <>
             <label>모델
               <select value={modelId} onChange={(e) => changeModel(e.target.value)} disabled={optRunning}>
+                <option value={SCENE_MODEL_ID}>현재 형상 (편집한 씬을 기준으로 변형)</option>
                 {Object.values(MODELS).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
             </label>
@@ -362,6 +393,8 @@ export default function App() {
               onStart={startOptimize} onStop={stop}
               selected={selected} toggleSelected={toggleSelected}
               onApply={applyCandidate} colorFor={colorFor} onPreview={previewCandidate}
+              onRefreshBase={modelId === SCENE_MODEL_ID ? refreshBase : undefined}
+              baseStale={modelId === SCENE_MODEL_ID && scene !== optBase}
             />
             {status === 'error' && message && <p className="error">{message}</p>}
             <p className="muted small">평가 백엔드: {(params.backend ?? 'auto').toUpperCase()} (시뮬레이션 탭에서 변경). 탐색은 지정한 dx 로 빠르게 순위를 매기므로, 최종 후보는 "적용" 후 dx 1 mm 로 다시 실행해 확인하세요.</p>

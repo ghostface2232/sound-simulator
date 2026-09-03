@@ -132,6 +132,18 @@ export function validateScene(input: unknown): Diagnostic[] {
         const r0 = Math.min(...x.r), r1 = Math.max(...x.r), z0 = Math.min(...x.z), z1 = Math.max(...x.z);
         if (r0 > rMax || z0 > zMax || z1 < zMin) err('shape-outside', `${tag}: 도메인 밖에 있습니다.`);
         else if (r1 > rMax || z0 < zMin || z1 > zMax) warn('shape-clipped', `${tag}: 도메인 밖으로 나가 잘립니다.`);
+      } else if (x.kind === 'path') {
+        const nodes = x.nodes as unknown;
+        const okNode = (n: unknown) => !!n && typeof n === 'object' && isPair((n as { p: unknown }).p)
+          && ((n as { hIn?: unknown }).hIn === undefined || isPair((n as { hIn?: unknown }).hIn))
+          && ((n as { hOut?: unknown }).hOut === undefined || isPair((n as { hOut?: unknown }).hOut));
+        if (!Array.isArray(nodes) || nodes.length < 3 || !nodes.every(okNode)) {
+          err('path-nodes', `${tag}: nodes 는 { p: [r, z], hIn?, hOut? } 3개 이상이어야 합니다.`);
+          return;
+        }
+        const pts = (nodes as { p: [number, number] }[]).map((n) => n.p);
+        if (pts.some(([r]) => r < 0)) err('polygon-negative-r', `${tag}: 앵커의 r 은 0 이상이어야 합니다.`);
+        if (pts.some(([r, z]) => r > rMax || z < zMin || z > zMax)) warn('shape-clipped', `${tag}: 도메인 밖으로 나가 잘립니다.`);
       } else if (x.kind === 'polygon') {
         if (!Array.isArray(x.points) || x.points.length < 3 || !x.points.every(isPair)) {
           err('polygon-points', `${tag}: points 는 [r, z] 쌍 3개 이상이어야 합니다.`);
@@ -141,7 +153,7 @@ export function validateScene(input: unknown): Diagnostic[] {
         if (pts.some(([r]) => r < 0)) err('polygon-negative-r', `${tag}: r 은 0 이상이어야 합니다.`);
         if (pts.some(([r, z]) => r > rMax || z < zMin || z > zMax)) warn('shape-clipped', `${tag}: 도메인 밖으로 나가 잘립니다.`);
       } else {
-        err('shape-kind', `${tag}: kind 는 rect 또는 polygon 이어야 합니다.`);
+        err('shape-kind', `${tag}: kind 는 rect, polygon, path 중 하나여야 합니다.`);
       }
     });
   }

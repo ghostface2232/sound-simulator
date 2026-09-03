@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import {
-  DEFAULT_OBJECTIVE, SIDE_RADIAL_MODEL, latinHypercube, mulberry32, optimize, scoreResult, simParamsFor,
+  DEFAULT_OBJECTIVE, SIDE_RADIAL_MODEL, latinHypercube, mulberry32, optimize, scoreResult, simParamsFor, makeSceneModel,
   type OptimizeSettings,
 } from '../src/engine/optimize';
 import { runSimulation } from '../src/engine/runner';
@@ -94,10 +94,46 @@ async function main() {
     assert.ok(!hasErrors(diagnose(tall, DEFAULT_PARAMS)));
   });
 
+  console.log('scene model');
+  await test('scene model baseline reproduces the edited scene; local samples stay near it', async () => {
+    const { sideRadialScene } = await import('../src/engine/presets');
+    const { normalizeScene, shapeToPath, smoothNode } = await import('../src/engine/geometry');
+    const { buildGrid } = await import('../src/engine/rasterize');
+    const edited = normalizeScene(sideRadialScene());
+    const ri = edited.shapes.findIndex((s) => s.role === 'reflector');
+    const rp = shapeToPath(edited.shapes[ri]);
+    rp.nodes = rp.nodes.map((_, i) => smoothNode(rp.nodes, i));
+    edited.shapes[ri] = rp;
+    const model = makeSceneModel(edited);
+    assert.ok(model.variables.some((v) => v.key.startsWith(`s${ri}n`) && v.enabled), 'reflector anchors are variables');
+    const baseParams = Object.fromEntries(model.variables.map((v) => [v.key, v.value]));
+    const base = model.build(baseParams);
+    assert.deepEqual(Array.from(buildGrid(base, 2).solid), Array.from(buildGrid(edited, 2).solid), 'baseline == edited scene');
+    const moved = model.build({ ...baseParams, [`s${ri}n0z`]: rp.nodes[0].p[1] + 3 });
+    const mp = shapeToPath(moved.shapes[ri]);
+    assert.ok(Math.abs(mp.nodes[0].p[1] - rp.nodes[0].p[1] - 3) < 1e-9, 'anchor moved');
+    assert.ok(mp.nodes[0].hOut && Math.abs(mp.nodes[0].hOut[1] - rp.nodes[0].hOut![1] - 3) < 1e-9, 'handles move with the anchor');
+
+    const local: OptimizeSettings = {
+      seed: 5, nSamples: 4, nRefine: 0, topK: 2, dx: 3, durationMs: 4, fMin: 500, fMax: 6000, spongeMm: 90,
+      objective: DEFAULT_OBJECTIVE, explore: 'local', localSigma: 0.1,
+    };
+    const ranked = await optimize(model, model.variables, local, evaluateWith(local));
+    const baseline = ranked.find((c) => c.origin === 'baseline')!;
+    const samples = ranked.filter((c) => c.origin === 'sample');
+    assert.equal(samples.length, 4);
+    for (const c of samples) {
+      for (const v of model.variables.filter((v) => v.enabled)) {
+        assert.ok(Math.abs(c.params[v.key] - v.value) <= 0.5 * (v.max - v.min), 'local sample within half the range');
+      }
+    }
+    assert.ok(samples.some((c) => Object.keys(c.params).some((k) => c.params[k] !== baseline.params[k])), 'samples differ from baseline');
+  });
+
   console.log('optimizer');
   const small: OptimizeSettings = {
     seed: 7, nSamples: 3, nRefine: 2, topK: 2,
-    dx: 3, durationMs: 4, fMin: 500, fMax: 6000, spongeMm: 90, objective: DEFAULT_OBJECTIVE,
+    dx: 3, durationMs: 4, fMin: 500, fMax: 6000, spongeMm: 90, objective: DEFAULT_OBJECTIVE, explore: 'global', localSigma: 0.25,
   };
   await test('same seed and settings reproduce the same candidates and scores', async () => {
     const a = await optimize(SIDE_RADIAL_MODEL, SIDE_RADIAL_MODEL.variables, small, evaluateWith(small));
@@ -114,7 +150,7 @@ async function main() {
 
   const demo: OptimizeSettings = {
     seed: 3, nSamples: 8, nRefine: 6, topK: 3,
-    dx: 2.5, durationMs: 6, fMin: 500, fMax: 10000, spongeMm: 100, objective: DEFAULT_OBJECTIVE,
+    dx: 2.5, durationMs: 6, fMin: 500, fMax: 10000, spongeMm: 100, objective: DEFAULT_OBJECTIVE, explore: 'global', localSigma: 0.25,
   };
   await test('optimised reflector beats a plain (almost flat) reflector on the objective', async () => {
     const evaluate = evaluateWith(demo);

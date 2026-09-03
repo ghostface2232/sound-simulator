@@ -31,7 +31,24 @@ export interface PolygonShape {
   label?: string;
 }
 
-export type Shape = RectShape | PolygonShape;
+/** Anchor of a closed cubic-Bézier path. Handles are absolute [r, z]; a missing handle means a straight segment end. */
+export interface PathNode {
+  p: [number, number];
+  hIn?: [number, number];
+  hOut?: [number, number];
+}
+
+/** Closed path of cubic Bézier segments (the editor's native form). Flattened to a polygon for the solver. */
+export interface PathShape {
+  kind: 'path';
+  nodes: PathNode[];
+  material: Material;
+  role?: ShapeRole;
+  sigma?: number;
+  label?: string;
+}
+
+export type Shape = RectShape | PolygonShape | PathShape;
 
 /** A flat piston (disc or annulus) at height z, moving along the axis. */
 export interface PistonDriver {
