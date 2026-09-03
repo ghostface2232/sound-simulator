@@ -8,8 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "validate": "tsx scripts/validate.ts",
-    "test": "tsx scripts/test-checks.ts",
-    "check": "tsc --noEmit && tsx scripts/test-checks.ts && tsx scripts/validate.ts"
+    "test": "tsx scripts/test-checks.ts && tsx scripts/test-optimize.ts",
+    "check": "tsc --noEmit && npm test && tsx scripts/validate.ts"
   },
   "dependencies": {
     "react": "^18.3.1",

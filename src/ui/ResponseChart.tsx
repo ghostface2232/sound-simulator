@@ -2,17 +2,24 @@ import { useEffect, useRef } from 'react';
 import type { SimResult } from '../engine/analysis';
 import { responseAt } from '../engine/analysis';
 
+export interface ResponseSeries {
+  result: SimResult;
+  /** Probe angle (deg from +z). */
+  angle: number;
+  color: string;
+  label: string;
+}
+
 interface Props {
-  result: SimResult | null;
-  angles: number[];
+  series: ResponseSeries[];
   fMin?: number;
   fMax?: number;
 }
 
-const COLORS = ['#d33', '#e58a1f', '#2a9d8f', '#3a6fd8', '#7b3fbf'];
+export const SERIES_COLORS = ['#d33', '#e58a1f', '#2a9d8f', '#3a6fd8', '#7b3fbf', '#b5179e', '#6a994e', '#7f5539'];
 
-/** Frequency response (dB vs log f) for several probe angles. */
-export function ResponseChart({ result, angles, fMin = 200, fMax = 20000 }: Props) {
+/** Frequency response (dB vs log f) for one or more series. */
+export function ResponseChart({ series, fMin = 200, fMax = 20000 }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -29,21 +36,17 @@ export function ResponseChart({ result, angles, fMin = 200, fMax = 20000 }: Prop
     const W = rect.width - L - Rm, H = rect.height - T - B;
     const lx = (f: number) => L + (W * (Math.log10(f) - Math.log10(fMin))) / (Math.log10(fMax) - Math.log10(fMin));
 
-    // Determine y range from data.
     let yMax = -Infinity, yMin = Infinity;
-    const series: { color: string; ys: Float32Array; label: string }[] = [];
-    if (result) {
-      angles.forEach((a, k) => {
-        const ys = responseAt(result, a);
-        series.push({ color: COLORS[k % COLORS.length], ys, label: `${a}°` });
-        for (let i = 0; i < ys.length; i++) {
-          const f = result.freqs[i];
-          if (f < fMin || f > fMax) continue;
-          if (ys[i] > yMax) yMax = ys[i];
-          if (ys[i] < yMin) yMin = ys[i];
-        }
-      });
-    }
+    const lines = series.map((s) => {
+      const ys = responseAt(s.result, s.angle);
+      for (let i = 0; i < ys.length; i++) {
+        const f = s.result.freqs[i];
+        if (f < fMin || f > fMax) continue;
+        if (ys[i] > yMax) yMax = ys[i];
+        if (ys[i] < yMin) yMin = ys[i];
+      }
+      return { s, ys };
+    });
     if (!isFinite(yMax)) { yMax = 0; yMin = -40; }
     yMax = Math.ceil(yMax / 10) * 10 + 5;
     yMin = Math.max(yMax - 60, Math.floor(yMin / 10) * 10 - 5);
@@ -60,23 +63,22 @@ export function ResponseChart({ result, angles, fMin = 200, fMax = 20000 }: Prop
       ctx.fillText(`${v}`, 4, ly(v) + 3);
     }
 
-    if (!result) return;
-    series.forEach((s, k) => {
+    lines.forEach(({ s, ys }, k) => {
       ctx.strokeStyle = s.color; ctx.lineWidth = 1.5;
       ctx.beginPath();
       let started = false;
-      for (let i = 0; i < s.ys.length; i++) {
-        const f = result.freqs[i];
+      for (let i = 0; i < ys.length; i++) {
+        const f = s.result.freqs[i];
         if (f < fMin || f > fMax) continue;
-        const x = lx(f), y = ly(s.ys[i]);
+        const x = lx(f), y = ly(ys[i]);
         started ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
         started = true;
       }
       ctx.stroke();
       ctx.fillStyle = s.color;
-      ctx.fillText(s.label, L + W - 30, T + 12 + k * 12);
+      ctx.fillText(s.label, L + W - 60, T + 12 + k * 12);
     });
-  }, [result, angles, fMin, fMax]);
+  }, [series, fMin, fMax]);
 
   return <canvas ref={ref} className="chart-canvas" />;
 }

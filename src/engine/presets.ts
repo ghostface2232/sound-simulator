@@ -60,7 +60,9 @@ export function sideRadialScene(p: Partial<SideRadialParams> = {}): Scene {
       material: 'rigid',
       label: 'reflector cone',
     },
-    { kind: 'rect', r: [R - q.wall - 0.5, R + 0.5], z: q.slotZ, material: 'air', label: 'side slot' },
+    // Cut 2 mm past both wall faces so the slot stays open on coarse grids (a 1.5 mm wall
+    // rasterises to two cells at dx >= 2 mm; a cut the width of the wall would leave one closed).
+    { kind: 'rect', r: [R - q.wall - 2, R + 2], z: q.slotZ, material: 'air', label: 'side slot' },
   ];
   if (q.fabric) {
     shapes.push({

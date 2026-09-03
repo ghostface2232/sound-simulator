@@ -210,6 +210,15 @@ export function checkSetup(scene: Scene, params: SimParams): Diagnostic[] {
     warn('probe-near-sponge', `측정 원호와 흡수층 사이가 ${clear.toFixed(0)} mm 입니다 (권장 60 mm 이상). 저주파 경계 반사가 섞일 수 있습니다.`);
   }
 
+  // Features thinner than one cell are misrepresented by the staircase grid.
+  const thin: string[] = [];
+  scene.shapes.forEach((s, k) => {
+    if (s.kind !== 'rect') return;
+    const w = Math.abs(s.r[1] - s.r[0]), h = Math.abs(s.z[1] - s.z[0]);
+    if (Math.min(w, h) < dx) thin.push(s.label ?? `shapes[${k}]`);
+  });
+  if (thin.length) warn('thin-feature', `dx ${dx} mm 보다 얇은 형상: ${thin.join(', ')}. 벽은 굵어지고 절단(air)은 막힐 수 있습니다. dx 를 줄이거나 절단 폭에 여유를 두세요.`);
+
   // Sources inside the sponge are almost certainly a setup mistake.
   for (const d of scene.drivers) {
     const pts: [number, number][] = d.kind === 'piston' ? [[Math.max(...d.r), d.z]] : [[d.r, d.z[0]], [d.r, d.z[1]]];

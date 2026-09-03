@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_PARAMS, type Scene, type SimParams } from './engine/scene';
 import { PRESETS, pistonBaffleScene } from './engine/presets';
-import type { ParityReport } from './engine/runner';
+import { diagnose, type ParityReport } from './engine/runner';
 import type { SimResult } from './engine/analysis';
 import { hasErrors, type Diagnostic } from './engine/checks';
-import { diagnose } from './engine/runner';
+import {
+  DEFAULT_OPTIMIZE, SIDE_RADIAL_MODEL,
+  type Candidate, type DesignVariable, type OptimizeProgress, type OptimizeSettings,
+} from './engine/optimize';
 import type { WorkerIn, WorkerOut } from './worker/sim.worker';
 import { FieldView, type GridInfo } from './ui/FieldView';
-import { PolarChart } from './ui/PolarChart';
-import { ResponseChart } from './ui/ResponseChart';
+import { PolarChart, type PolarSeries } from './ui/PolarChart';
+import { ResponseChart, SERIES_COLORS, type ResponseSeries } from './ui/ResponseChart';
+import { OptimizePanel } from './ui/OptimizePanel';
 
 type Status = 'idle' | 'running' | 'done' | 'error';
+type Mode = 'sim' | 'opt';
 
 function DiagnosticList({ items }: { items: Diagnostic[] }) {
   if (items.length === 0) return null;
@@ -27,6 +32,7 @@ function DiagnosticList({ items }: { items: Diagnostic[] }) {
 }
 
 export default function App() {
+  const [mode, setMode] = useState<Mode>('sim');
   const [presetKey, setPresetKey] = useState<string>('side-radial');
   const [sceneText, setSceneText] = useState<string>(() => JSON.stringify(PRESETS['side-radial'](), null, 2));
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS);
@@ -41,6 +47,15 @@ export default function App() {
   const [parityBusy, setParityBusy] = useState(false);
   const [polarFreq, setPolarFreq] = useState(5000);
   const [colorScale, setColorScale] = useState(0.05);
+
+  // Optimisation state.
+  const model = SIDE_RADIAL_MODEL;
+  const [variables, setVariables] = useState<DesignVariable[]>(() => model.variables.map((v) => ({ ...v })));
+  const [optSettings, setOptSettings] = useState<OptimizeSettings>(DEFAULT_OPTIMIZE);
+  const [optRunning, setOptRunning] = useState(false);
+  const [optProgress, setOptProgress] = useState<OptimizeProgress | null>(null);
+  const [optElapsed, setOptElapsed] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const workerRef = useRef<Worker | null>(null);
   const peakRef = useRef(0);
@@ -71,11 +86,20 @@ export default function App() {
         case 'parity-result':
           setParity(m.report); setParityBusy(false);
           break;
+        case 'opt-progress':
+          setOptProgress(m.progress);
+          break;
+        case 'opt-done':
+          setOptProgress((prev) => ({ done: prev?.total ?? m.ranked.length, total: prev?.total ?? m.ranked.length, best: m.ranked[0] ?? null, ranked: m.ranked }));
+          setOptElapsed(m.elapsedMs); setOptRunning(false);
+          // Pre-select the best candidate and the baseline for comparison.
+          setSelected(new Set(m.ranked.filter((c, i) => i === 0 || c.origin === 'baseline').map((c) => c.id)));
+          break;
         case 'stopped':
-          setStatus('idle'); setMessage('중단됨');
+          setStatus('idle'); setMessage('중단됨'); setOptRunning(false);
           break;
         case 'error':
-          setStatus('error'); setMessage(m.message); setParityBusy(false);
+          setStatus('error'); setMessage(m.message); setParityBusy(false); setOptRunning(false);
           break;
       }
     };
@@ -97,6 +121,7 @@ export default function App() {
     return diagnose(parsed.scene, params);
   }, [parsed, params]);
   const blocked = hasErrors(diagnostics);
+  const busy = status === 'running' || optRunning || parityBusy;
 
   const loadPreset = useCallback((key: string) => {
     setPresetKey(key);
@@ -124,78 +149,140 @@ export default function App() {
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
   }, []);
 
+  const startOptimize = useCallback(() => {
+    if (!workerRef.current) return;
+    setOptRunning(true); setOptProgress(null); setOptElapsed(null); setSelected(new Set()); setMessage('');
+    const msg: WorkerIn = { type: 'optimize', modelId: model.id, variables, settings: optSettings, backend: params.backend ?? 'auto' };
+    workerRef.current.postMessage(msg);
+  }, [model, variables, optSettings, params.backend]);
+
+  const toggleSelected = useCallback((id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const applyCandidate = useCallback((c: Candidate) => {
+    const scene = model.build(c.params);
+    scene.description = `${scene.description ?? ''} [최적화 후보 #${c.id}, 점수 ${c.score.toFixed(2)}]`;
+    setSceneText(JSON.stringify(scene, null, 2));
+    setPresetKey('side-radial');
+    setResult(null); setFrame(null); setGrid(null); setRunWarnings([]);
+    setMode('sim');
+  }, [model]);
+
   const setNum = (key: keyof SimParams) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setParams({ ...params, [key]: +e.target.value });
 
+  // Colour assignment for compared candidates: stable by selection order of the ranked list.
+  const rankedTop = optProgress?.ranked ?? [];
+  const compared = rankedTop.filter((c) => selected.has(c.id) && c.result);
+  const colorFor = useCallback((id: number) => {
+    const i = compared.findIndex((c) => c.id === id);
+    return i < 0 ? null : SERIES_COLORS[i % SERIES_COLORS.length];
+  }, [compared]);
+
+  const polarSeries: PolarSeries[] = mode === 'sim'
+    ? (result ? [{ result, color: '#d33', label: '' }] : [])
+    : compared.map((c, i) => ({ result: c.result!, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `#${c.id} ${c.score.toFixed(2)}` }));
+  const responseSeries: ResponseSeries[] = mode === 'sim'
+    ? (result ? [0, 45, 90, 135, 180].map((a, i) => ({ result, angle: a, color: SERIES_COLORS[i], label: `${a}°` })) : [])
+    : compared.map((c, i) => ({ result: c.result!, angle: optSettings.objective.sideAngle, color: SERIES_COLORS[i % SERIES_COLORS.length], label: `#${c.id}` }));
+
   const cells = grid ? grid.Nr * grid.Nz : 0;
-  const chartFMin = result ? result.freqs[0] : params.fMin;
+  const chartFMin = mode === 'sim' ? (result ? result.freqs[0] : params.fMin) : (compared[0]?.result?.freqs[0] ?? optSettings.fMin);
+  const chartFMax = mode === 'sim' ? params.fMax : optSettings.fMax;
   const description = (parsed.scene as { description?: string } | null)?.description;
 
   return (
     <div className="app">
       <aside className="panel left">
         <h1>Speaker Sim <span className="sub">axisymmetric FDTD</span></h1>
-
-        <label>프리셋
-          <select value={presetKey} onChange={(e) => loadPreset(e.target.value)}>
-            {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
-        </label>
-        {description && <p className="desc">{description}</p>}
-
-        <div className="grid2">
-          <label>dx (mm)
-            <input type="number" step="0.25" min="0.25" max="4" value={params.dx} onChange={setNum('dx')} />
-          </label>
-          <label>시간 (ms)
-            <input type="number" step="1" min="1" max="40" value={params.durationMs} onChange={setNum('durationMs')} />
-          </label>
-          <label>fMin (Hz)
-            <input type="number" step="50" min="20" max="5000" value={params.fMin} onChange={setNum('fMin')} />
-          </label>
-          <label>fMax (Hz)
-            <input type="number" step="1000" min="2000" max="40000" value={params.fMax} onChange={setNum('fMax')} />
-          </label>
-          <label>흡수층 (cells)
-            <input type="number" step="10" min="10" max="150" value={params.spongeCells} onChange={setNum('spongeCells')} />
-          </label>
-          <label>백엔드
-            <select value={params.backend ?? 'auto'} onChange={(e) => setParams({ ...params, backend: e.target.value as SimParams['backend'] })}>
-              <option value="auto">auto (WebGPU 우선)</option>
-              <option value="gpu">WebGPU</option>
-              <option value="cpu">CPU</option>
-            </select>
-          </label>
+        <div className="modes">
+          <button className={mode === 'sim' ? 'active' : ''} onClick={() => setMode('sim')}>시뮬레이션</button>
+          <button className={mode === 'opt' ? 'active' : ''} onClick={() => setMode('opt')}>리플렉터 최적화</button>
         </div>
 
-        <DiagnosticList items={diagnostics} />
+        {mode === 'sim' ? (
+          <>
+            <label>프리셋
+              <select value={presetKey} onChange={(e) => loadPreset(e.target.value)}>
+                {Object.keys(PRESETS).map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </label>
+            {description && <p className="desc">{description}</p>}
 
-        <div className="row">
-          <button className="primary" onClick={run} disabled={status === 'running' || blocked}
-            title={blocked ? '오류를 먼저 해결하세요' : undefined}>실행</button>
-          <button onClick={stop} disabled={status !== 'running'}>중단</button>
-        </div>
-        <div className="progress"><div style={{ width: `${progress * 100}%` }} /></div>
-        <p className="status">
-          {status === 'running' ? `계산 중 ${(progress * 100).toFixed(0)}%` : message}
-          {cells > 0 && <span className="muted"> · {grid!.Nr}×{grid!.Nz} = {cells.toLocaleString()} cells</span>}
-        </p>
-        {status === 'done' && <DiagnosticList items={runWarnings} />}
+            <div className="grid2">
+              <label>dx (mm)
+                <input type="number" step="0.25" min="0.25" max="4" value={params.dx} onChange={setNum('dx')} />
+              </label>
+              <label>시간 (ms)
+                <input type="number" step="1" min="1" max="40" value={params.durationMs} onChange={setNum('durationMs')} />
+              </label>
+              <label>fMin (Hz)
+                <input type="number" step="50" min="20" max="5000" value={params.fMin} onChange={setNum('fMin')} />
+              </label>
+              <label>fMax (Hz)
+                <input type="number" step="1000" min="2000" max="40000" value={params.fMax} onChange={setNum('fMax')} />
+              </label>
+              <label>흡수층 (cells)
+                <input type="number" step="10" min="10" max="150" value={params.spongeCells} onChange={setNum('spongeCells')} />
+              </label>
+              <label>백엔드
+                <select value={params.backend ?? 'auto'} onChange={(e) => setParams({ ...params, backend: e.target.value as SimParams['backend'] })}>
+                  <option value="auto">auto (WebGPU 우선)</option>
+                  <option value="gpu">WebGPU</option>
+                  <option value="cpu">CPU</option>
+                </select>
+              </label>
+            </div>
 
-        <div className="row">
-          <button onClick={runParity} disabled={parityBusy || status === 'running'}>CPU/GPU 일치 검사</button>
-          {parityBusy && <span className="muted">검사 중…</span>}
-        </div>
-        {parity && (
-          <p className="muted small">
-            배플 피스톤 dx 2 mm, {parity.nSteps} 스텝: 시계열 최대 상대 차이 {(parity.maxRelDiff * 100).toExponential(2)} %,
-            스펙트럼 최대 차이 {parity.maxDbDiff.toFixed(3)} dB · CPU {(parity.cpuMs / 1000).toFixed(1)} s / GPU {(parity.gpuMs / 1000).toFixed(1)} s
-          </p>
+            <DiagnosticList items={diagnostics} />
+
+            <div className="row">
+              <button className="primary" onClick={run} disabled={busy || blocked}
+                title={blocked ? '오류를 먼저 해결하세요' : undefined}>실행</button>
+              <button onClick={stop} disabled={status !== 'running'}>중단</button>
+            </div>
+            <div className="progress"><div style={{ width: `${progress * 100}%` }} /></div>
+            <p className="status">
+              {status === 'running' ? `계산 중 ${(progress * 100).toFixed(0)}%` : message}
+              {cells > 0 && <span className="muted"> · {grid!.Nr}×{grid!.Nz} = {cells.toLocaleString()} cells</span>}
+            </p>
+            {status === 'done' && <DiagnosticList items={runWarnings} />}
+
+            <div className="row">
+              <button onClick={runParity} disabled={busy}>CPU/GPU 일치 검사</button>
+              {parityBusy && <span className="muted">검사 중…</span>}
+            </div>
+            {parity && (
+              <p className="muted small">
+                배플 피스톤 dx 2 mm, {parity.nSteps} 스텝: 시계열 최대 상대 차이 {(parity.maxRelDiff * 100).toExponential(2)} %,
+                스펙트럼 최대 차이 {parity.maxDbDiff.toFixed(3)} dB · CPU {(parity.cpuMs / 1000).toFixed(1)} s / GPU {(parity.gpuMs / 1000).toFixed(1)} s
+              </p>
+            )}
+
+            <label className="grow">씬 JSON (mm, r-z 단면)
+              <textarea value={sceneText} onChange={(e) => setSceneText(e.target.value)} spellCheck={false} />
+            </label>
+          </>
+        ) : (
+          <>
+            <OptimizePanel
+              model={model}
+              variables={variables} setVariables={setVariables}
+              settings={optSettings} setSettings={setOptSettings}
+              running={optRunning} progress={optProgress} elapsedMs={optElapsed}
+              onStart={startOptimize} onStop={stop}
+              selected={selected} toggleSelected={toggleSelected}
+              onApply={applyCandidate} colorFor={colorFor}
+            />
+            {status === 'error' && message && <p className="error">{message}</p>}
+            <p className="muted small">평가 백엔드: {(params.backend ?? 'auto').toUpperCase()} (시뮬레이션 탭에서 변경). 탐색은 지정한 dx 로 빠르게 순위를 매기므로, 최종 후보는 "적용" 후 dx 1 mm 로 다시 실행해 확인하세요.</p>
+          </>
         )}
-
-        <label className="grow">씬 JSON (mm, r-z 단면)
-          <textarea value={sceneText} onChange={(e) => setSceneText(e.target.value)} spellCheck={false} />
-        </label>
       </aside>
 
       <main className="center">
@@ -203,19 +290,20 @@ export default function App() {
       </main>
 
       <aside className="panel right">
-        <h2>지향성 <span className="sub">{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}</span></h2>
-        <input type="range" min={Math.log10(chartFMin)} max={Math.log10(params.fMax)} step={0.01}
-          value={Math.log10(Math.max(polarFreq, chartFMin))}
+        <h2>지향성 <span className="sub">{polarFreq >= 1000 ? `${polarFreq / 1000} kHz` : `${polarFreq} Hz`}{mode === 'opt' && ' · 공통 기준'}</span></h2>
+        <input type="range" min={Math.log10(chartFMin)} max={Math.log10(chartFMax)} step={0.01}
+          value={Math.log10(Math.min(Math.max(polarFreq, chartFMin), chartFMax))}
           onChange={(e) => setPolarFreq(Math.round(10 ** +e.target.value / 50) * 50)} />
-        <div className="chart polar"><PolarChart result={result} freq={polarFreq} /></div>
+        <div className="chart polar"><PolarChart series={polarSeries} freq={polarFreq} normalize={mode === 'opt' ? 'shared' : 'each'} /></div>
 
-        <h2>주파수 응답 <span className="sub">dB, 상대값</span></h2>
+        <h2>주파수 응답 <span className="sub">dB, 상대값{mode === 'opt' && ` · ${optSettings.objective.sideAngle}° 방향`}</span></h2>
         <div className="chart response">
-          <ResponseChart result={result} angles={[0, 45, 90, 135, 180]} fMin={chartFMin} fMax={params.fMax} />
+          <ResponseChart series={responseSeries} fMin={chartFMin} fMax={chartFMax} />
         </div>
         <p className="muted small">
           0° = +z(위), 90° = 측면, 180° = 아래. 절대 SPL은 드라이버 데이터가 있어야 하므로 지금은 상대 dB입니다.
-          {result && ` 표시 하한 ${Math.round(result.fMinReliable)} Hz는 해석 시간으로 결정됩니다.`}
+          {mode === 'sim' && result && ` 표시 하한 ${Math.round(result.fMinReliable)} Hz는 해석 시간으로 결정됩니다.`}
+          {mode === 'opt' && ' 최적화 모드에서는 체크한 후보들을 같은 기준(전체 최대 = 0 dB)으로 겹쳐 그립니다.'}
         </p>
       </aside>
     </div>
