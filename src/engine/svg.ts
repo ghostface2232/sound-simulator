@@ -10,7 +10,7 @@ import type { Scene, PathNode, PathShape, ShapeRole } from './scene';
 import { shapeToPath, materialForRole, type Pt } from './geometry';
 
 export const ROLE_FILL: Record<ShapeRole, string> = {
-  housing: '#3d434c', reflector: '#f28c28', slot: '#22b8cf', fabric: '#d9b97a', other: '#8a9099',
+  housing: '#3d434c', reflector: '#f28c28', slot: '#22b8cf', fabric: '#d9b97a', driver: '#e8879f', other: '#8a9099',
 };
 
 const f = (v: number) => (Math.round(v * 1000) / 1000).toString();

@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import type { Scene, PathShape, PathNode, Driver, ShapeRole } from '../engine/scene';
 import type { Diagnostic } from '../engine/checks';
 import {
-  cornerNode, distToSegment, driverSegment, isSmoothNode, nearestOnPath, pointInPolygon, sceneBounds,
+  cornerNode, distToSegment, driverSegment, ellipsePath, isSmoothNode, nearestOnPath, pointInPolygon, sceneBounds,
   segmentIsLine, shapeToPath, shapeToPolygon, smoothNode, splitSegment, type Pt,
 } from '../engine/geometry';
 
@@ -18,7 +18,7 @@ export type Selection =
   | { kind: 'measure' }
   | null;
 
-export type Tool = 'select' | 'pen' | 'rect';
+export type Tool = 'select' | 'pen' | 'rect' | 'ellipse';
 
 export interface SectionCanvasHandle {
   fitDevice(): void;
@@ -46,6 +46,7 @@ export const ROLE_COLORS: Record<ShapeRole, { fill: string; stroke: string; name
   reflector: { fill: '#f28c28', stroke: '#b8641a', name: '리플렉터' },
   slot: { fill: 'rgba(34,184,207,0.18)', stroke: '#1798ad', name: '슬롯' },
   fabric: { fill: '#d9b97a', stroke: '#9a7a3a', name: '패브릭' },
+  driver: { fill: '#e8879f', stroke: '#b81c4b', name: '드라이버 몸체' },
   other: { fill: '#8a9099', stroke: '#5c626b', name: '기타' },
 };
 export const DRIVER_COLOR = '#e0245e';
@@ -64,7 +65,7 @@ type Drag =
   | { kind: 'measureRadius' }
   | { kind: 'measureCenter'; startZ: number; origZ: number }
   | { kind: 'pan'; startPx: [number, number]; origView: View }
-  | { kind: 'rect'; start: Pt; current: Pt }
+  | { kind: 'rect'; start: Pt; current: Pt; ellipse: boolean; square: boolean }
   | { kind: 'pen'; node: number; startPx: [number, number]; dragged: boolean };
 
 const HANDLE_PX = 7;
@@ -101,7 +102,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   const dragRef = useRef<Drag | null>(null);
   const [penNodes, setPenNodes] = useState<PathNode[]>([]);
   const [mouseMm, setMouseMm] = useState<Pt | null>(null);
-  const [rectDrag, setRectDrag] = useState<{ start: Pt; current: Pt } | null>(null);
+  const [rectDrag, setRectDrag] = useState<{ start: Pt; current: Pt; ellipse: boolean } | null>(null);
   const hatchRef = useRef<CanvasPattern | null>(null);
   const layerRef = useRef<HTMLCanvasElement | null>(null);
   const fittedRef = useRef(false);
@@ -112,6 +113,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   const snapV = useCallback((v: number) => Math.round(v / p.snap) * p.snap, [p.snap]);
   const snapR = useCallback((r: number) => Math.max(0, snapV(Math.abs(r))), [snapV]);
   const snapH = (v: number) => Math.round(v * 10) / 10; // handles snap to 0.1 mm
+  /** Shift: keep only the dominant axis of a delta. */
+  const axisLock = (dr: number, dz: number, shift: boolean): [number, number] => (!shift ? [dr, dz] : Math.abs(dr) >= Math.abs(dz) ? [dr, 0] : [0, dz]);
 
   const fitBox = useCallback((r0: number, r1: number, z0: number, z1: number, margin: number) => {
     const el = wrapRef.current;
@@ -322,9 +325,9 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       dragRef.current = { kind: 'pen', node: next.length - 1, startPx: [px, py], dragged: false };
       return;
     }
-    if (p.tool === 'rect') {
-      dragRef.current = { kind: 'rect', start: cur, current: cur };
-      setRectDrag({ start: cur, current: cur });
+    if (p.tool === 'rect' || p.tool === 'ellipse') {
+      dragRef.current = { kind: 'rect', start: cur, current: cur, ellipse: p.tool === 'ellipse', square: e.shiftKey };
+      setRectDrag({ start: cur, current: cur, ellipse: p.tool === 'ellipse' });
       return;
     }
     const { sel, drag } = hitTest(px, py);
@@ -348,14 +351,16 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       case 'anchor': {
         const nodes = cloneNodes(nodesOf(d.index));
         const target: Pt = [snapR(xm), snapV(zm)];
-        nodes[d.node] = translateNode(d.orig, target[0] - d.orig.p[0], target[1] - d.orig.p[1]);
+        const [ddr, ddz] = axisLock(target[0] - d.orig.p[0], target[1] - d.orig.p[1], e.shiftKey);
+        nodes[d.node] = translateNode(d.orig, Math.max(-d.orig.p[0], ddr), ddz);
         writeNodes(d.index, nodes, false);
         break;
       }
       case 'handle': {
         const nodes = cloneNodes(nodesOf(d.index));
         const n = nodes[d.node];
-        const h: Pt = [Math.max(0, snapH(Math.abs(xm))), snapH(zm)];
+        let h: Pt = [Math.max(0, snapH(Math.abs(xm))), snapH(zm)];
+        if (e.shiftKey) { const [hr, hz] = axisLock(h[0] - n.p[0], h[1] - n.p[1], true); h = [Math.max(0, n.p[0] + hr), n.p[1] + hz]; }
         const wasSmooth = isSmoothNode(n);
         if (d.which === 'in') n.hIn = h; else n.hOut = h;
         // Mirror the opposite handle (angle and length) unless Alt is held or the anchor was a corner.
@@ -369,8 +374,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       }
       case 'shape': {
         const minR = Math.min(...d.orig.flatMap((n) => [n.p[0], ...(n.hIn ? [n.hIn[0]] : []), ...(n.hOut ? [n.hOut[0]] : [])]));
-        const dr = Math.max(-minR, snapV(Math.abs(xm) - d.start[0]));
-        const dz = snapV(zm - d.start[1]);
+        const [ldr, ldz] = axisLock(snapV(Math.abs(xm) - d.start[0]), snapV(zm - d.start[1]), e.shiftKey);
+        const dr = Math.max(-minR, ldr), dz = ldz;
         writeNodes(d.index, d.orig.map((n) => translateNode(n, dr, dz)), false);
         break;
       }
@@ -403,9 +408,14 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         p.onChange({ ...scene, measure: { ...scene.measure, zCenter: snapV(d.origZ + (zm - d.startZ)) } }, false);
         break;
       case 'rect': {
-        const cur: Pt = [snapR(xm), snapV(zm)];
+        let cur: Pt = [snapR(xm), snapV(zm)];
+        if (e.shiftKey) {
+          const w = cur[0] - d.start[0], h = cur[1] - d.start[1];
+          const s = Math.max(Math.abs(w), Math.abs(h));
+          cur = [Math.max(0, d.start[0] + Math.sign(w || 1) * s), d.start[1] + Math.sign(h || 1) * s];
+        }
         d.current = cur;
-        setRectDrag({ start: d.start, current: cur });
+        setRectDrag({ start: d.start, current: cur, ellipse: d.ellipse });
         break;
       }
       case 'pen': {
@@ -433,7 +443,9 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       setRectDrag(null);
       const r0 = Math.min(d.start[0], d.current[0]), r1 = Math.max(d.start[0], d.current[0]);
       const z0 = Math.min(d.start[1], d.current[1]), z1 = Math.max(d.start[1], d.current[1]);
-      if (r1 - r0 >= p.snap && z1 - z0 >= p.snap) addShape([{ p: [r0, z0] }, { p: [r1, z0] }, { p: [r1, z1] }, { p: [r0, z1] }]);
+      if (r1 - r0 >= p.snap && z1 - z0 >= p.snap) {
+        addShape(d.ellipse ? ellipsePath((r0 + r1) / 2, (z0 + z1) / 2, (r1 - r0) / 2, (z1 - z0) / 2) : [{ p: [r0, z0] }, { p: [r1, z0] }, { p: [r1, z1] }, { p: [r0, z1] }]);
+      }
       p.onToolDone();
       return;
     }
@@ -751,7 +763,9 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     if (rectDrag) {
       const [x0, y0] = P(rectDrag.start[0], rectDrag.start[1]), [x1, y1] = P(rectDrag.current[0], rectDrag.current[1]);
       ctx.strokeStyle = SELECT_COLOR; ctx.setLineDash([4, 3]); ctx.lineWidth = 1.5;
-      ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)); ctx.setLineDash([]);
+      if (rectDrag.ellipse) { ctx.beginPath(); ctx.ellipse((x0 + x1) / 2, (y0 + y1) / 2, Math.abs(x1 - x0) / 2, Math.abs(y1 - y0) / 2, 0, 0, Math.PI * 2); ctx.stroke(); }
+      else ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+      ctx.setLineDash([]);
     }
 
     const barMm = v.s > 12 ? 5 : v.s > 4 ? 10 : v.s > 1.2 ? 50 : 100;
@@ -762,7 +776,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     if (mouseMm) ctx.fillText(`r ${mouseMm[0].toFixed(1)}  z ${mouseMm[1].toFixed(1)} mm`, size.w - 150, size.h - 8);
   }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, toPx, snapR, snapV]);
 
-  const cursor = p.tool === 'pen' || p.tool === 'rect' ? 'crosshair' : dragRef.current?.kind === 'pan' ? 'grabbing' : 'default';
+  const cursor = p.tool !== 'select' ? 'crosshair' : dragRef.current?.kind === 'pan' ? 'grabbing' : 'default';
 
   return (
     <div ref={wrapRef} className="section-wrap">
@@ -780,7 +794,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         onContextMenu={(e) => e.preventDefault()}
       />
       <div className="legend">
-        {(['housing', 'reflector', 'slot', 'fabric'] as ShapeRole[]).map((r) => (
+        {(['housing', 'reflector', 'slot', 'fabric', 'driver'] as ShapeRole[]).map((r) => (
           <span key={r}><i style={{ background: ROLE_COLORS[r].fill, borderColor: ROLE_COLORS[r].stroke }} />{ROLE_COLORS[r].name}</span>
         ))}
         <span><i style={{ background: DRIVER_COLOR, borderColor: DRIVER_COLOR }} />드라이버</span>

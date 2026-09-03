@@ -126,6 +126,7 @@ export default function App() {
       else if (e.key === 'v' || e.key === 'V') setTool('select');
       else if (e.key === 'p' || e.key === 'P') setTool('pen');
       else if (e.key === 'r' || e.key === 'R') setTool('rect');
+      else if (e.key === 'e' || e.key === 'E') setTool('ellipse');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

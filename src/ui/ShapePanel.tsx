@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Scene, Driver, ShapeRole, Material, PathNode } from '../engine/scene';
-import { cornerNode, isSmoothNode, materialForRole, shapeToPath, smoothNode, type Pt } from '../engine/geometry';
+import { cornerNode, driverBodyShape, isSmoothNode, materialForRole, shapeToPath, smoothNode, type Pt } from '../engine/geometry';
 import { validateScene } from '../engine/checks';
 import { sceneToSvg, svgToShapes } from '../engine/svg';
 import { ROLE_COLORS, type Selection, type Tool } from './SectionCanvas';
@@ -100,6 +100,14 @@ export function ShapePanel(p: Props) {
       : { kind: 'radial', r: 20, z: [zTop, zTop + 20], dir: '+r', label: `driver ${scene.drivers.length + 1}` };
     p.onChange({ ...scene, drivers: [...scene.drivers, d] });
     p.onSelect({ kind: 'driver', index: scene.drivers.length });
+  };
+
+  const addDriverBody = () => {
+    const di = selection?.kind === 'driver' ? selection.index : 0;
+    const d = scene.drivers[di];
+    if (!d) return;
+    p.onChange({ ...scene, shapes: [...scene.shapes, driverBodyShape(d)] });
+    p.onSelect({ kind: 'shape', index: scene.shapes.length });
   };
 
   const toolBtn = (t: Tool, name: string, hint: string) => (
@@ -240,9 +248,11 @@ export function ShapePanel(p: Props) {
       <div className="toolbar">
         {toolBtn('select', '선택', '클릭·드래그로 요소 편집 (V)')}
         {toolBtn('pen', '펜', '클릭 = 코너 앵커, 클릭-드래그 = 곡선 앵커, 시작점 클릭 또는 Enter 로 닫기 (P)')}
-        {toolBtn('rect', '사각형', '드래그로 사각형 추가 (R)')}
+        {toolBtn('rect', '사각형', '드래그로 사각형 추가 (R), Shift = 정사각형')}
+        {toolBtn('ellipse', '원', '드래그로 타원 추가 (E), Shift = 원')}
         <button onClick={() => addDriver('piston')} disabled={!p.editable} title="피스톤 드라이버 추가">+피스톤</button>
         <button onClick={() => addDriver('radial')} disabled={!p.editable} title="방사형 드라이버 추가">+방사</button>
+        <button onClick={addDriverBody} disabled={!p.editable || scene.drivers.length === 0} title="선택한(또는 첫) 드라이버 뒤에 바스켓·마그넷 몸체를 추가. 이후 자유롭게 편집">+드라이버 몸체</button>
       </div>
       <div className="toolbar">
         <button onClick={p.onUndo} disabled={!p.canUndo} title="Ctrl+Z">↶</button>

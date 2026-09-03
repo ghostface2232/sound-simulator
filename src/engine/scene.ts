@@ -8,7 +8,7 @@
 export type Material = 'rigid' | 'fabric' | 'air';
 
 /** What a shape represents; drives colours in the editor and a few geometry checks. */
-export type ShapeRole = 'housing' | 'reflector' | 'slot' | 'fabric' | 'other';
+export type ShapeRole = 'housing' | 'reflector' | 'slot' | 'fabric' | 'driver' | 'other';
 
 export interface RectShape {
   kind: 'rect';

@@ -115,9 +115,13 @@ export function makeSceneModel(base: Scene, range = 8): ParametricModel {
     variables,
     build(params) {
       const out = normalizeScene(scene);
+      // Driver bodies follow the (single) driver's height offset.
+      const bodyDz = scene.drivers.length === 1 ? (params['d0dz'] ?? 0) : 0;
       out.shapes = out.shapes.map((s, si) => {
         const p = shapeToPath(s);
-        if (p.role === 'reflector') {
+        if (p.role === 'driver' && bodyDz !== 0) {
+          p.nodes = p.nodes.map((n) => shiftNode(n, 0, bodyDz));
+        } else if (p.role === 'reflector') {
           p.nodes = p.nodes.map((n, ni) => {
             const dz = (params[`s${si}n${ni}z`] ?? n.p[1]) - n.p[1];
             const dr = n.p[0] > 0.01 ? (params[`s${si}n${ni}r`] ?? n.p[0]) - n.p[0] : 0;

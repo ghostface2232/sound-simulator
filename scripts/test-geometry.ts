@@ -122,6 +122,21 @@ async function main() {
     assert.deepEqual(flattenPath(sq), [[0, 0], [10, 0], [10, 10], [0, 10]]);
     assert.deepEqual(shapeToPath({ kind: 'rect', r: [0, 10], z: [0, 10], material: 'rigid' }).nodes.map((n) => n.p), [[0, 0], [10, 0], [10, 10], [0, 10]]);
   });
+  await test('ellipse path lies on the ellipse; driver body sits behind the face and passes checks', async () => {
+    const { ellipsePath, driverBodyShape, flattenPath: flat, checkGeometry: cg } = await import('../src/engine/geometry');
+    const pts = flat(ellipsePath(20, 30, 10, 6));
+    for (const [r, z] of pts) {
+      const e = ((r - 20) / 10) ** 2 + ((z - 30) / 6) ** 2;
+      assert.ok(Math.abs(e - 1) < 0.01, `ellipse error ${e}`);
+    }
+    const s = normalizeScene(sideRadialScene());
+    const body = driverBodyShape(s.drivers[0]);
+    assert.equal(body.role, 'driver');
+    // Driver fires -z from z = 36, so the body must lie above the face.
+    assert.ok(body.nodes.every((n) => n.p[1] >= 36), 'body behind the face');
+    s.shapes.push(body);
+    assert.deepEqual(cg(s).filter((d) => d.severity === 'error'), []);
+  });
   await test('SVG export writes cubic paths that parse back to the same anchors and handles', () => {
     const s = normalizeScene(sideRadialScene());
     const refl = s.shapes.findIndex((x) => x.role === 'reflector');

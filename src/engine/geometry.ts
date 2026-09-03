@@ -230,9 +230,44 @@ export function defaultRole(material: Material): ShapeRole {
   return material === 'rigid' ? 'housing' : material === 'fabric' ? 'fabric' : 'slot';
 }
 
+/** Closed 4-anchor Bézier ellipse centred at (cr, cz). Anchors are clamped to r >= 0. */
+export function ellipsePath(cr: number, cz: number, rr: number, rz: number): PathNode[] {
+  const k = 0.5522847498; // circle approximation constant
+  const R = (r: number) => Math.max(0, r);
+  return [
+    { p: [R(cr + rr), cz], hIn: [R(cr + rr), cz - k * rz], hOut: [R(cr + rr), cz + k * rz] },
+    { p: [cr, cz + rz], hIn: [R(cr + k * rr), cz + rz], hOut: [R(cr - k * rr), cz + rz] },
+    { p: [R(cr - rr), cz], hIn: [R(cr - rr), cz + k * rz], hOut: [R(cr - rr), cz - k * rz] },
+    { p: [cr, cz - rz], hIn: [R(cr - k * rr), cz - rz], hOut: [R(cr + k * rr), cz - rz] },
+  ];
+}
+
+/**
+ * Default driver body (basket + magnet) behind a driver face, as an editable rigid path
+ * with role 'driver'. Depth is measured away from the firing direction.
+ */
+export function driverBodyShape(d: Driver, depth = 16): PathShape {
+  const { a, b, dir } = driverSegment(d);
+  const back = (q: Pt, k: number): Pt => [Math.max(0, q[0] - dir[0] * k), q[1] - dir[1] * k];
+  let pts: Pt[];
+  if (d.kind === 'piston') {
+    const r0 = a[0], r1 = b[0];
+    const rim = r1 + 1.5, neck = Math.max(r0 + 2, r1 * 0.45), magnet = Math.max(r0 + 3, r1 * 0.55);
+    // Face rim -> basket taper -> magnet block, closed along the axis (or inner radius).
+    pts = [
+      back([r0, a[1]], 0.5), back([rim, a[1]], 0.5), back([rim, a[1]], 3), back([neck, a[1]], depth * 0.55),
+      back([magnet, a[1]], depth * 0.55), back([magnet, a[1]], depth), back([r0, a[1]], depth),
+    ];
+  } else {
+    const z0 = a[1], z1 = b[1], h = z1 - z0;
+    pts = [back([a[0], z0 - 1], 0.5), back([a[0], z1 + 1], 0.5), back([a[0], z1 + 1], 3), back([a[0], z0 + h * 0.8], depth), back([a[0], z0 + h * 0.2], depth), back([a[0], z0 - 1], 3)];
+  }
+  return { kind: 'path', nodes: pts.map((p) => ({ p })), material: 'rigid', role: 'driver', label: `${d.label ?? 'driver'} body` };
+}
+
 export function materialForRole(role: ShapeRole, current?: Material): Material {
   switch (role) {
-    case 'housing': case 'reflector': return 'rigid';
+    case 'housing': case 'reflector': case 'driver': return 'rigid';
     case 'slot': return 'air';
     case 'fabric': return 'fabric';
     default: return current ?? 'rigid';
