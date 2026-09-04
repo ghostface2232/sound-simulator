@@ -284,8 +284,9 @@ export default function App() {
   }, [params]);
   const loadVariant = useCallback((v: Variant) => {
     const next = autoMeasure ? withFittedMeasurement(normalizeScene(v.scene), params) : normalizeScene(v.scene);
-    resetScene(next); setOptBase(next); setCmpPreview(null); setActivity('layers'); setTimeout(() => canvasRef.current?.fitDevice(), 0);
-  }, [autoMeasure, params, resetScene]);
+    updateScene(next, true); setSelection(null); setOptBase(next); setCmpPreview(null); setActivity('layers');
+    setTimeout(() => canvasRef.current?.fitDevice(), 0);
+  }, [autoMeasure, params, updateScene]);
   const updateVariantFromEditor = useCallback((v: Variant) => {
     setVariants((prev) => prev.map((x) => x.id === v.id ? { id: x.id, name: x.name, scene } : x));
     setCmpPreview({ scene, id: v.id, label: v.name });
@@ -448,6 +449,10 @@ export default function App() {
   const warningCount = diagnostics.filter((d) => d.severity === 'warning').length;
   const actionable = diagnostics.filter((d) => d.severity !== 'info');
   const canvasScene = preview ? preview.scene : scene;
+  const inspectorDiagnostics = useMemo(
+    () => preview ? diagnose(canvasScene, params) : diagnostics,
+    [canvasScene, diagnostics, params, preview],
+  );
 
   return (
     <div className="app">
@@ -618,10 +623,10 @@ export default function App() {
         </main>
 
         <Inspector
-          scene={scene} onChange={(s) => updateEditedScene(s, true)}
+          scene={canvasScene} onChange={(s) => { if (editable) updateEditedScene(s, true); }}
           selection={preview ? null : selection} onSelect={setSelection}
-          params={params} setParams={setParams} diagnostics={diagnostics}
-          autoMeasure={autoMeasure} onAutoMeasureChange={changeAutoMeasure} onFitMeasure={fitMeasureNow}
+          params={params} setParams={(next) => { if (editable) setParams(next); }} diagnostics={inspectorDiagnostics}
+          autoMeasure={autoMeasure} onAutoMeasureChange={(enabled) => { if (editable) changeAutoMeasure(enabled); }} onFitMeasure={() => { if (editable) fitMeasureNow(); }}
           editable={editable} previewing={!!preview}
           parity={parity} parityBusy={parityBusy} onRunParity={runParity} busy={busy}
         />
