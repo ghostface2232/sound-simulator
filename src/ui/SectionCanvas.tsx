@@ -6,6 +6,7 @@ import {
   type Band,
   segmentIsLine, shapeToPath, shapeToPolygon, smoothNode, splitSegment, type Pt,
 } from '../engine/geometry';
+import { readCanvasTheme, type CanvasTheme } from './theme';
 
 export interface GridInfo {
   Nr: number; Nz: number; dx: number; zMin: number;
@@ -36,6 +37,7 @@ export type Tool = 'select' | 'pen' | 'rect' | 'ellipse';
 export interface SectionCanvasHandle {
   fitDevice(): void;
   fitDomain(): void;
+  zoomBy(factor: number): void;
 }
 
 interface Props {
@@ -52,20 +54,34 @@ interface Props {
   spongeMm: number;
   editable: boolean;
   snap: number;
+  /** Bumped when the colour scheme changes so the canvas repaints with the new palette. */
+  themeKey?: string;
+  /** Reports the current zoom (px per mm) so the shell can show a readout. */
+  onZoom?: (pxPerMm: number) => void;
 }
 
+/** Role palette as CSS custom properties: usable directly in HTML/SVG styles. */
 export const ROLE_COLORS: Record<ShapeRole, { fill: string; stroke: string; name: string }> = {
-  housing: { fill: '#3d434c', stroke: '#22262c', name: '하우징' },
-  reflector: { fill: '#f28c28', stroke: '#b8641a', name: '리플렉터' },
-  slot: { fill: 'rgba(34,184,207,0.18)', stroke: '#1798ad', name: '슬롯' },
-  fabric: { fill: '#d9b97a', stroke: '#9a7a3a', name: '패브릭' },
-  driver: { fill: '#e8879f', stroke: '#b81c4b', name: '드라이버 몸체' },
-  other: { fill: '#8a9099', stroke: '#5c626b', name: '기타' },
+  housing: { fill: 'var(--role-housing)', stroke: 'var(--role-housing-line)', name: '하우징' },
+  reflector: { fill: 'var(--role-reflector)', stroke: 'var(--role-reflector-line)', name: '리플렉터' },
+  slot: { fill: 'var(--role-slot)', stroke: 'var(--role-slot-line)', name: '슬롯' },
+  fabric: { fill: 'var(--role-fabric)', stroke: 'var(--role-fabric-line)', name: '패브릭' },
+  driver: { fill: 'var(--role-driverbody)', stroke: 'var(--role-driverbody-line)', name: '드라이버 몸체' },
+  other: { fill: 'var(--role-other)', stroke: 'var(--role-other-line)', name: '기타' },
 };
-export const DRIVER_COLOR = '#e0245e';
-export const MEASURE_COLOR = '#2e9e5b';
-export const SELECT_COLOR = '#2f6fe4';
-export const ERROR_COLOR = '#d62828';
+export const DRIVER_COLOR = 'var(--role-driver)';
+export const MEASURE_COLOR = 'var(--role-measure)';
+
+function roleStyle(T: CanvasTheme, role: ShapeRole): { fill: string; stroke: string } {
+  switch (role) {
+    case 'housing': return { fill: T.housingFill, stroke: T.housingStroke };
+    case 'reflector': return { fill: T.reflectorFill, stroke: T.reflectorStroke };
+    case 'slot': return { fill: T.slotFill, stroke: T.slotStroke };
+    case 'fabric': return { fill: T.fabricFill, stroke: T.fabricStroke };
+    case 'driver': return { fill: T.driverBodyFill, stroke: T.driverBodyStroke };
+    default: return { fill: T.otherFill, stroke: T.otherStroke };
+  }
+}
 
 interface View { s: number; ox: number; oy: number }
 
@@ -100,13 +116,13 @@ export function roleOf(s: { role?: ShapeRole; material: string }): ShapeRole {
   return s.role ?? (s.material === 'rigid' ? 'housing' : s.material === 'fabric' ? 'fabric' : 'slot');
 }
 
-function makeHatch(): CanvasPattern | null {
+function makeHatch(T: CanvasTheme): CanvasPattern | null {
   const c = document.createElement('canvas');
   c.width = 8; c.height = 8;
   const g = c.getContext('2d');
   if (!g) return null;
-  g.fillStyle = ROLE_COLORS.fabric.fill; g.fillRect(0, 0, 8, 8);
-  g.strokeStyle = 'rgba(90,60,10,0.45)'; g.lineWidth = 1.2;
+  g.fillStyle = T.fabricFill; g.fillRect(0, 0, 8, 8);
+  g.strokeStyle = T.fabricHatch; g.lineWidth = 1.2;
   g.beginPath(); g.moveTo(-2, 10); g.lineTo(10, -2); g.moveTo(-2, 2); g.lineTo(2, -2); g.moveTo(6, 10); g.lineTo(10, 6); g.stroke();
   return g.createPattern(c, 'repeat');
 }
@@ -131,7 +147,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   const [rectDrag, setRectDrag] = useState<{ start: Pt; current: Pt; ellipse: boolean } | null>(null);
   const [marquee, setMarquee] = useState<Marquee | null>(null);
   const [panning, setPanning] = useState(false);
-  const hatchRef = useRef<CanvasPattern | null>(null);
+  const hatchRef = useRef<{ key: string; pattern: CanvasPattern | null } | null>(null);
   const layerRef = useRef<HTMLCanvasElement | null>(null);
   const fittedRef = useRef(false);
 
@@ -153,25 +169,44 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     setView({ s, ox: w / 2, oy: h / 2 + ((z0 + z1) / 2) * s });
   }, []);
 
+  const zoomBy = useCallback((f: number) => {
+    const el = wrapRef.current;
+    const v = viewRef.current;
+    const px = el ? el.clientWidth / 2 : 0, py = el ? el.clientHeight / 2 : 0;
+    const s = Math.min(80, Math.max(0.3, v.s * f));
+    setView({ s, ox: px - (px - v.ox) * (s / v.s), oy: py - (py - v.oy) * (s / v.s) });
+  }, []);
+
   useImperativeHandle(ref, () => ({
-    fitDevice: () => { const b = sceneBounds(p.scene); fitBox(-b.r1, b.r1, b.z0, b.z1, Math.max(15, (b.z1 - b.z0) * 0.6)); },
+    fitDevice: () => { const b = sceneBounds(p.scene); fitBox(-b.r1, b.r1, b.z0, b.z1, Math.max(15, (b.z1 - b.z0) * 0.45)); },
     fitDomain: () => { const d = p.scene.domain; fitBox(-d.rMax, d.rMax, d.zMin, d.zMax, 5); },
-  }), [p.scene, fitBox]);
+    zoomBy,
+  }), [p.scene, fitBox, zoomBy]);
 
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      setSize({ w: el.clientWidth, h: el.clientHeight });
-      if (!fittedRef.current && el.clientWidth > 0) {
+      const w = el.clientWidth, h = el.clientHeight;
+      setSize((prev) => {
+        // Keep the mm point at the viewport centre fixed while the panel layout changes.
+        if (fittedRef.current && prev.w > 0 && prev.h > 0 && (prev.w !== w || prev.h !== h)) {
+          const v = viewRef.current;
+          setView({ s: v.s, ox: v.ox + (w - prev.w) / 2, oy: v.oy + (h - prev.h) / 2 });
+        }
+        return { w, h };
+      });
+      if (!fittedRef.current && w > 0) {
         fittedRef.current = true;
         const b = sceneBounds(p.scene);
-        fitBox(-b.r1, b.r1, b.z0, b.z1, Math.max(15, (b.z1 - b.z0) * 0.6));
+        fitBox(-b.r1, b.r1, b.z0, b.z1, Math.max(15, (b.z1 - b.z0) * 0.45));
       }
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, [fitBox, p.scene]);
+
+  useEffect(() => { p.onZoom?.(view.s); }, [view.s, p.onZoom]);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -193,6 +228,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   const fieldImage = useMemo(() => {
     const { grid, frame, scale } = p.field;
     if (!grid || !frame) return null;
+    const T = readCanvasTheme();
+    const [bR, bG, bB] = T.fieldBase, [pR, pG, pB] = T.fieldPos, [nR, nG, nB] = T.fieldNeg;
     const { Nr, Nz, solid } = grid;
     const W = 2 * Nr - 1, H = Nz;
     const off = document.createElement('canvas');
@@ -205,12 +242,12 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const y = Nz - 1 - j;
       for (let i = 0; i < Nr; i++) {
         const c = j * Nr + i;
-        let R = 244, G = 245, B = 247;
+        let R = bR, G = bG, B = bB;
         if (!solid[c]) {
           const v = Math.max(-1, Math.min(1, frame[c] * inv));
           const m = Math.sign(v) * Math.sqrt(Math.abs(v));
-          if (m > 0) { R = 244; G = 245 - 205 * m; B = 247 - 225 * m; }
-          else { R = 244 + 215 * m; G = 245 + 150 * m; B = 247; }
+          if (m > 0) { R = bR + (pR - bR) * m; G = bG + (pG - bG) * m; B = bB + (pB - bB) * m; }
+          else { R = bR - (nR - bR) * m; G = bG - (nG - bG) * m; B = bB - (nB - bB) * m; }
         }
         for (const x of [Nr - 1 + i, Nr - 1 - i]) {
           const o = (y * W + x) * 4;
@@ -220,11 +257,12 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     }
     ctx.putImageData(img, 0, 0);
     return { canvas: off, grid };
-  }, [p.field]);
+  }, [p.field, p.themeKey]);
 
   const maskImage = useMemo(() => {
     const g = p.gridMask;
     if (!g) return null;
+    const T = readCanvasTheme();
     const { Nr, Nz, solid, sigma } = g;
     const W = 2 * Nr - 1, H = Nz;
     const off = document.createElement('canvas');
@@ -237,8 +275,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       for (let i = 0; i < Nr; i++) {
         const c = j * Nr + i;
         let R = 0, G = 0, B = 0, A = 0;
-        if (solid[c]) { R = 20; G = 24; B = 30; A = 110; }
-        else if (sigma[c] > 0) { R = 200; G = 140; B = 40; A = 110; }
+        if (solid[c]) { [R, G, B] = T.gridSolid; A = 110; }
+        else if (sigma[c] > 0) { [R, G, B] = T.gridSigma; A = 110; }
         for (const x of [Nr - 1 + i, Nr - 1 - i]) {
           const o = (y * W + x) * 4;
           data[o] = R; data[o + 1] = G; data[o + 2] = B; data[o + 3] = A;
@@ -247,7 +285,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     }
     ctx.putImageData(img, 0, 0);
     return { canvas: off, grid: g };
-  }, [p.gridMask]);
+  }, [p.gridMask, p.themeKey]);
 
   // ---- shape access ------------------------------------------------------------
   const nodesOf = useCallback((index: number): PathNode[] => shapeToPath(p.scene.shapes[index]).nodes, [p.scene]);
@@ -675,14 +713,16 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const v = view;
     const scene = p.scene;
+    const T = readCanvasTheme();
+    const SELECT_COLOR = T.select, ERROR_COLOR = T.error;
     const P = (r: number, z: number) => toPx(r, z, v);
 
-    ctx.fillStyle = '#eef0f3';
+    ctx.fillStyle = T.bg;
     ctx.fillRect(0, 0, size.w, size.h);
 
     const dom = scene.domain;
     const [dx0, dy0] = P(-dom.rMax, dom.zMax), [dx1, dy1] = P(dom.rMax, dom.zMin);
-    ctx.fillStyle = '#f6f7f9';
+    ctx.fillStyle = T.domain;
     ctx.fillRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
 
     if (fieldImage) {
@@ -694,16 +734,16 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     }
 
     const sp = p.spongeMm;
-    ctx.fillStyle = 'rgba(120,125,135,0.10)';
+    ctx.fillStyle = T.sponge;
     const [sx0, sy0] = P(-dom.rMax + sp, dom.zMax - sp), [sx1, sy1] = P(dom.rMax - sp, dom.zMin + sp);
     ctx.beginPath();
     ctx.rect(dx0, dy0, dx1 - dx0, dy1 - dy0);
     ctx.rect(sx0, sy0, sx1 - sx0, sy1 - sy0);
     ctx.fill('evenodd');
-    ctx.strokeStyle = '#c9cdd4'; ctx.lineWidth = 1; ctx.setLineDash([]);
+    ctx.strokeStyle = T.domainLine; ctx.lineWidth = 1; ctx.setLineDash([]);
     ctx.strokeRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
 
-    ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = T.axis; ctx.setLineDash([6, 4]);
     ctx.beginPath(); ctx.moveTo(P(0, dom.zMin)[0], dy0); ctx.lineTo(P(0, dom.zMin)[0], dy1); ctx.stroke();
     ctx.setLineDash([]);
 
@@ -711,15 +751,15 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     if (scene.floor?.enabled) {
       const [, fy] = P(0, scene.floor.z);
       const yBottom = Math.min(dy1, size.h + 10), yTop = Math.max(fy, dy0);
-      ctx.fillStyle = 'rgba(70,60,50,0.18)';
+      ctx.fillStyle = T.floor;
       ctx.fillRect(dx0, yTop, dx1 - dx0, Math.max(0, yBottom - yTop));
       ctx.save(); ctx.beginPath(); ctx.rect(dx0, yTop, dx1 - dx0, Math.max(0, yBottom - yTop)); ctx.clip();
-      ctx.strokeStyle = 'rgba(70,60,50,0.35)'; ctx.lineWidth = 1;
+      ctx.strokeStyle = T.floor; ctx.lineWidth = 1;
       for (let x = dx0 - 40; x < dx1 + 40; x += 14) { ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x - 30, yTop + 30); ctx.stroke(); }
       ctx.restore();
-      ctx.strokeStyle = '#4a4036'; ctx.lineWidth = 3;
+      ctx.strokeStyle = T.floorLine; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(dx0, fy); ctx.lineTo(dx1, fy); ctx.stroke();
-      ctx.fillStyle = '#4a4036'; ctx.font = '11px "SF Pro KR", sans-serif';
+      ctx.fillStyle = T.floorLine; ctx.font = '11px "SF Pro KR", sans-serif';
       ctx.fillText(`바닥 z = ${scene.floor.z}`, dx0 + 6, fy - 5);
     }
 
@@ -757,7 +797,9 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     layer.height = Math.max(1, Math.round(size.h * dpr));
     const L = layer.getContext('2d')!;
     L.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (!hatchRef.current) hatchRef.current = makeHatch();
+    const themeKey = p.themeKey ?? 'dark';
+    if (!hatchRef.current || hatchRef.current.key !== themeKey) hatchRef.current = { key: themeKey, pattern: makeHatch(T) };
+    const hatch = hatchRef.current.pattern;
 
     const shapeNodes = scene.shapes.map((s) => shapeToPath(s).nodes);
     const order = scene.shapes.map((s, i) => ({ s, i })).sort((a, b) => {
@@ -766,16 +808,17 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     });
     for (const { s, i } of order) {
       const role = roleOf(s);
+      const style = roleStyle(T, role);
       for (const mirror of [false, true]) {
         pathNodes(L, shapeNodes[i], mirror);
         if (s.material === 'air') {
           L.save(); L.globalCompositeOperation = 'destination-out'; L.fillStyle = '#000'; L.fill(); L.restore();
-          L.fillStyle = ROLE_COLORS.slot.fill; L.fill();
-          L.strokeStyle = ROLE_COLORS.slot.stroke; L.lineWidth = 1.5; L.setLineDash([4, 3]); L.stroke(); L.setLineDash([]);
+          L.fillStyle = T.slotFill; L.fill();
+          L.strokeStyle = T.slotStroke; L.lineWidth = 1.25; L.setLineDash([4, 3]); L.stroke(); L.setLineDash([]);
         } else {
-          L.fillStyle = s.material === 'fabric' ? (hatchRef.current ?? ROLE_COLORS.fabric.fill) : ROLE_COLORS[role].fill;
+          L.fillStyle = s.material === 'fabric' ? (hatch ?? T.fabricFill) : style.fill;
           L.fill();
-          L.strokeStyle = ROLE_COLORS[role].stroke; L.lineWidth = 1.2; L.stroke();
+          L.strokeStyle = style.stroke; L.lineWidth = 1; L.stroke();
         }
       }
     }
@@ -795,9 +838,9 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         const [ax, ay] = P(m * a[0], a[1]), [bx, by] = P(m * b[0], b[1]);
         const back: Pt = [-dir[0] * 2, -dir[1] * 2];
         const [cx, cy] = P(m * (a[0] + back[0]), a[1] + back[1]), [ex, ey] = P(m * (b[0] + back[0]), b[1] + back[1]);
-        ctx.fillStyle = 'rgba(224,36,94,0.25)';
+        ctx.fillStyle = T.driverSoft;
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(ex, ey); ctx.lineTo(cx, cy); ctx.closePath(); ctx.fill();
-        ctx.strokeStyle = DRIVER_COLOR; ctx.lineWidth = 3.5;
+        ctx.strokeStyle = T.driver; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
         const n = Math.max(1, Math.floor(Math.hypot(bx - ax, by - ay) / 26));
         for (let k = 0; k < n; k++) {
@@ -809,7 +852,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
           ctx.beginPath(); ctx.moveTo(x1, y1);
           ctx.lineTo(x1 - 6 * Math.cos(ang - 0.5), y1 - 6 * Math.sin(ang - 0.5));
           ctx.lineTo(x1 - 6 * Math.cos(ang + 0.5), y1 - 6 * Math.sin(ang + 0.5));
-          ctx.closePath(); ctx.fillStyle = DRIVER_COLOR; ctx.fill();
+          ctx.closePath(); ctx.fillStyle = T.driver; ctx.fill();
         }
       }
     });
@@ -820,12 +863,12 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const angleMax = m.angleMax ?? 180;
       const [cx, cy] = P(0, m.zCenter);
       const R = m.radius * v.s;
-      ctx.strokeStyle = MEASURE_COLOR; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
+      ctx.strokeStyle = T.measure; ctx.lineWidth = 1.25; ctx.setLineDash([6, 5]);
       const a0 = -Math.PI / 2, a1 = -Math.PI / 2 + (angleMax * Math.PI) / 180;
       ctx.beginPath(); ctx.arc(cx, cy, R, a0, a1); ctx.stroke();
       ctx.beginPath(); ctx.arc(cx, cy, R, -a1 - Math.PI, -a0 - Math.PI, true); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = MEASURE_COLOR;
+      ctx.fillStyle = T.measure;
       for (let a = 0; a <= angleMax + 1e-9; a += m.angleStep) {
         const th = (a * Math.PI) / 180;
         for (const mm of [1, -1]) {
@@ -853,8 +896,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         for (const m of [1, -1]) {
           const [x, y] = P(m * d.point[0], d.point[1]);
           ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fillStyle = ERROR_COLOR; ctx.fill();
-          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-          ctx.fillStyle = '#fff'; ctx.font = '700 10px "SF Pro KR", sans-serif'; ctx.fillText('!', x - 2, y + 4);
+          ctx.strokeStyle = T.handleFill; ctx.lineWidth = 2; ctx.stroke();
+          ctx.fillStyle = T.handleFill; ctx.font = '700 10px "SF Pro KR", sans-serif'; ctx.fillText('!', x - 2, y + 4);
         }
       }
     }
@@ -864,24 +907,25 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     const square = (r: number, z: number, filled: boolean) => {
       for (const m of [1, -1]) {
         const [x, y] = P(m * r, z);
-        ctx.beginPath(); ctx.rect(x - 5, y - 5, 10, 10);
-        ctx.fillStyle = filled ? SELECT_COLOR : '#fff'; ctx.fill();
+        ctx.beginPath(); ctx.rect(x - 4.5, y - 4.5, 9, 9);
+        ctx.fillStyle = filled ? SELECT_COLOR : T.handleFill; ctx.fill();
         ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
       }
     };
     const circle = (r: number, z: number, filled: boolean) => {
       for (const m of [1, -1]) {
         const [x, y] = P(m * r, z);
-        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = filled ? SELECT_COLOR : '#fff'; ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = filled ? SELECT_COLOR : T.handleFill; ctx.fill();
         ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
       }
     };
     const handleLine = (from: Pt, to: Pt) => {
       for (const m of [1, -1]) {
         const [x0, y0] = P(m * from[0], from[1]), [x1, y1] = P(m * to[0], to[1]);
-        ctx.strokeStyle = 'rgba(47,111,228,0.78)'; ctx.lineWidth = 1.5;
+        ctx.strokeStyle = SELECT_COLOR; ctx.globalAlpha = 0.75; ctx.lineWidth = 1.25;
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        ctx.globalAlpha = 1;
       }
     };
     const groupedIndices = marquee
@@ -900,7 +944,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2;
       for (const mirror of [false, true]) { pathNodes(ctx, nodes, mirror); ctx.stroke(); }
       // Two bar handles at the start and end of the band (across its width).
-      ctx.fillStyle = '#fff'; ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5;
+      ctx.fillStyle = T.handleFill; ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5;
       if (selBand.axis === 'z') {
         const rc = (selBand.r0 + selBand.r1) / 2, halfW = Math.max((selBand.r1 - selBand.r0) / 2, 2);
         for (const zz of [selBand.z0, selBand.z1]) for (const m of [1, -1]) {
@@ -952,9 +996,9 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       const width = Math.abs(marquee.currentPx[0] - marquee.startPx[0]);
       const height = Math.abs(marquee.currentPx[1] - marquee.startPx[1]);
       ctx.save();
-      ctx.fillStyle = 'rgba(47,111,228,0.075)';
+      ctx.fillStyle = T.selectSoft;
       ctx.fillRect(left, top, width, height);
-      ctx.strokeStyle = 'rgba(47,111,228,0.9)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
       ctx.strokeRect(left + 0.5, top + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
       ctx.restore();
     }
@@ -986,7 +1030,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.setLineDash([]);
     }
 
-  }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, marquee, toPx, snapR, snapV]);
+  }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, p.themeKey, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, marquee, toPx, snapR, snapV]);
 
   // Debug hook for automated UI checks: mm -> canvas px mapping and the scene being drawn.
   useEffect(() => {
@@ -1099,13 +1143,6 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
           <span>r</span><b>{mouseMm[0].toFixed(1)}</b><span>z</span><b>{mouseMm[1].toFixed(1)}</b><span>mm</span>
         </div>
       )}
-      <div className="legend">
-        {(['housing', 'reflector', 'slot', 'fabric', 'driver'] as ShapeRole[]).map((r) => (
-          <span key={r}><i style={{ background: ROLE_COLORS[r].fill, borderColor: ROLE_COLORS[r].stroke }} />{ROLE_COLORS[r].name}</span>
-        ))}
-        <span><i style={{ background: DRIVER_COLOR, borderColor: DRIVER_COLOR }} />드라이버</span>
-        <span><i style={{ background: 'transparent', borderColor: MEASURE_COLOR, borderStyle: 'dashed' }} />측정 원호</span>
-      </div>
     </div>
   );
 });
