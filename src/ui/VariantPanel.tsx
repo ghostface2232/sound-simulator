@@ -2,7 +2,9 @@ import type { Scene } from '../engine/scene';
 import type { SimResult } from '../engine/analysis';
 import type { Diagnostic } from '../engine/checks';
 import type { ObjectiveBreakdown, ObjectiveSettings } from '../engine/optimize';
-import { CheckIcon, TrashIcon } from './Icons';
+import { ScenePreview } from './ScenePreview';
+import { Section, fmt } from './fields';
+import { ArrowLeftIcon, PlayIcon, RefreshIcon, SaveIcon, StopIcon, TrashIcon, VariantsIcon } from './Icons';
 
 export interface Variant {
   id: string;
@@ -24,6 +26,7 @@ interface Props {
   running: boolean;
   runningId: string | null;
   selected: Set<string>;
+  previewedId: string | null;
   onSave: () => void;
   onEvaluate: (ids?: string[]) => void;
   onStop: () => void;
@@ -35,93 +38,89 @@ interface Props {
   onPreview: (v: Variant) => void;
   colorFor: (id: string) => string | null;
   setObjective: (o: ObjectiveSettings) => void;
+  busy: boolean;
 }
-
-const fmt = (v: number | undefined, d = 1) => (v !== undefined && Number.isFinite(v) ? v.toFixed(d) : '—');
 
 export function VariantPanel(p: Props) {
   const ranked = [...p.variants].sort((a, b) => (b.breakdown?.score ?? -Infinity) - (a.breakdown?.score ?? -Infinity));
   const best = ranked.find((v) => v.breakdown && Number.isFinite(v.breakdown.score));
   const o = p.objective;
-  const setW = (key: keyof ObjectiveSettings['weights']) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    p.setObjective({ ...o, weights: { ...o.weights, [key]: +e.target.value } });
+  const setW = (key: keyof ObjectiveSettings['weights']) => (e: React.ChangeEvent<HTMLInputElement>) => p.setObjective({ ...o, weights: { ...o.weights, [key]: +e.target.value } });
+  const unevaluated = p.variants.filter((v) => !v.result || v.evaluatedWith !== p.paramsSignature).length;
 
   return (
     <>
-      <div className="workflow-intro">
-        <div className="row">
-          <button className="primary" onClick={p.onSave} disabled={p.running}>새 안 저장</button>
-          <button onClick={() => p.onEvaluate()} disabled={p.running || p.variants.length === 0}>전체 평가</button>
-        </div>
+      <div className="panel-head">
+        <h2>설계안</h2>
+        {p.variants.length > 0 && <span className="chip">{p.variants.length}</span>}
+        <span className="spacer" />
+        <button className="btn sm" onClick={p.onSave} disabled={p.busy} title="편집 중인 설계를 안으로 저장"><SaveIcon />현재 설계 저장</button>
+        {p.running
+          ? <button className="btn sm" onClick={p.onStop}><StopIcon />중단</button>
+          : <button className="btn sm primary" onClick={() => p.onEvaluate()} disabled={p.busy || p.variants.length === 0} title="모든 안을 시뮬레이션 설정으로 평가"><PlayIcon />모두 평가</button>}
       </div>
-      {p.running && <div className="row stop-row">
-        <button onClick={p.onStop}>중단</button>
-        <p className="status">평가 중 · {p.variants.find((v) => v.id === p.runningId)?.name ?? '준비 중'}</p>
-      </div>}
+      <div className="panel-body">
+        {p.running && (
+          <div className="section"><div className="section-body" style={{ paddingTop: 10 }}>
+            <div className="notice info"><span className="grow">평가 중 · {p.variants.find((v) => v.id === p.runningId)?.name ?? '준비 중'}</span></div>
+          </div></div>
+        )}
+        {p.variants.length === 0 ? (
+          <div className="section"><div className="section-body" style={{ paddingTop: 12 }}>
+            <div className="empty"><VariantsIcon /><strong>저장된 안 없음</strong></div>
+          </div></div>
+        ) : (
+          <Section title="저장된 안" meta={unevaluated > 0 ? `${unevaluated}개 평가 필요` : '모두 평가됨'}>
+            {ranked.map((v) => {
+              const color = p.colorFor(v.id);
+              const stale = v.result && v.evaluatedWith !== p.paramsSignature;
+              const previewed = p.previewedId === v.id;
+              return (
+                <article key={v.id} className={`cand ${v === best ? 'best' : ''} ${previewed ? 'previewed' : ''}`} onClick={() => p.onPreview(v)} tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); p.onPreview(v); } }}>
+                  <span className="compare-box" onClick={(e) => e.stopPropagation()} title={v.result ? '결과 도크에서 비교' : '평가 후 비교할 수 있습니다'}>
+                    <input className="check" type="checkbox" checked={p.selected.has(v.id)} onChange={() => p.onToggle(v.id)} disabled={!v.result} />
+                  </span>
+                  <div className="title">
+                    {color && <span className="swatch-dot" style={{ background: color }} />}
+                    <input className="name-input grow" aria-label="설계안 이름" value={v.name} onClick={(e) => e.stopPropagation()} onChange={(e) => p.onRename(v, e.target.value)} />
+                  </div>
+                  <div className="score">{fmt(v.breakdown?.score, 2)}<small>{v === best ? '현재 최고' : stale ? '재평가 필요' : v.error ? '평가 오류' : v.result ? '점수' : '미평가'}</small></div>
+                  <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: '64px 1fr', gap: 8, alignItems: 'center' }}>
+                    <span className="thumb" style={{ display: 'grid', placeItems: 'center', height: 48, borderRadius: 5, background: 'var(--canvas-domain)' }}><ScenePreview scene={v.scene} width={60} height={44} /></span>
+                    <dl className="metrics" style={{ gridColumn: 'auto' }}>
+                      <div><dt>레벨</dt><dd>{fmt(v.breakdown?.level)}</dd></div>
+                      <div><dt>균일</dt><dd>{fmt(v.breakdown?.uniformity)}</dd></div>
+                      <div><dt>평탄</dt><dd>{fmt(v.breakdown?.flatness)}</dd></div>
+                      <div><dt>누설</dt><dd>{fmt(v.breakdown?.leakage)}</dd></div>
+                    </dl>
+                  </div>
+                  {v.error && <div className="notice error" style={{ gridColumn: '1 / -1' }}>{v.error}</div>}
+                  <div className="foot" onClick={(e) => e.stopPropagation()}>
+                    <button className="btn sm" onClick={() => p.onEvaluate([v.id])} disabled={p.busy} title="이 안만 평가"><PlayIcon />평가</button>
+                    <button className="btn sm" onClick={() => p.onLoad(v)} disabled={p.busy} title="이 안을 편집기로 불러오기"><ArrowLeftIcon />편집</button>
+                    <button className="btn sm" onClick={() => p.onUpdateFromEditor(v)} disabled={p.busy} title="편집 중인 형상으로 이 안을 덮어쓰기"><RefreshIcon />갱신</button>
+                    <button className="btn sm icon danger" aria-label={`${v.name} 삭제`} onClick={() => p.onDelete(v)} disabled={p.busy}><TrashIcon /></button>
+                  </div>
+                </article>
+              );
+            })}
+          </Section>
+        )}
 
-      {p.variants.length === 0 ? (
-        <div className="empty-state compact-empty">
-          <CheckIcon />
-          <strong>비교할 안이 없습니다</strong>
-          <span>설계에서 안을 저장하세요.</span>
-        </div>
-      ) : (
-        <div className="variant-list">
-          {ranked.map((v) => {
-            const color = p.colorFor(v.id);
-            const stale = v.result && v.evaluatedWith !== p.paramsSignature;
-            const selected = p.selected.has(v.id);
-            return (
-              <article key={v.id} className={`variant-card ${v === best ? 'best' : ''} ${selected ? 'selected' : ''}`}
-                onClick={() => p.onPreview(v)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') p.onPreview(v); }} tabIndex={0}>
-                <header>
-                  <label className="compare-toggle" onClick={(e) => e.stopPropagation()} title={v.result ? '오른쪽 그래프에서 비교' : '평가 후 비교할 수 있습니다'}>
-                    <input type="checkbox" checked={selected} onChange={() => p.onToggle(v.id)} disabled={!v.result} />
-                    {color && <span className="swatch" style={{ background: color }} />}
-                  </label>
-                  <input className="variant-name" aria-label="설계안 이름" value={v.name} onClick={(e) => e.stopPropagation()} onChange={(e) => p.onRename(v, e.target.value)} />
-                  <div className="variant-score"><span>점수</span><strong>{fmt(v.breakdown?.score, 2)}</strong></div>
-                </header>
-                <div className="variant-flags">
-                  {v === best && <span className="badge">현재 최고</span>}
-                  {stale && <span className="stale-badge">재평가 필요</span>}
-                  {v.error && <span className="error small">평가 오류</span>}
-                  {!v.result && !v.error && <span className="muted small">아직 평가하지 않음</span>}
-                </div>
-                <dl className="metric-grid">
-                  <div><dt>측면 레벨</dt><dd>{fmt(v.breakdown?.level)}</dd></div>
-                  <div><dt>균일도</dt><dd>{fmt(v.breakdown?.uniformity)}</dd></div>
-                  <div><dt>평탄도</dt><dd>{fmt(v.breakdown?.flatness)}</dd></div>
-                  <div><dt>누설</dt><dd>{fmt(v.breakdown?.leakage)}</dd></div>
-                </dl>
-                <footer onClick={(e) => e.stopPropagation()}>
-                  <button className="mini" onClick={() => p.onEvaluate([v.id])} disabled={p.running}>평가</button>
-                  <button className="mini" onClick={() => p.onLoad(v)} disabled={p.running}>편집</button>
-                  <button className="mini replace-model-action" onClick={() => p.onUpdateFromEditor(v)} disabled={p.running} title="이 설계안을 현재 모델로 교체">현재 모델로 교체</button>
-                  <button className="icon-button mini danger-action" aria-label={`${v.name} 삭제`} onClick={() => p.onDelete(v)} disabled={p.running}><TrashIcon /></button>
-                </footer>
-              </article>
-            );
-          })}
-        </div>
-      )}
-      {p.variants.some((v) => v.error) && (
-        <ul className="diag">{p.variants.filter((v) => v.error).map((v) => <li key={v.id} className="diag-error"><span className="diag-code">오류</span>{v.name}: {v.error}</li>)}</ul>
-      )}
-
-      <details className="technical-note score-settings">
-        <summary><span>점수 기준</span></summary>
-        <div className="grid3">
-          <label>대역 시작 (Hz)<input type="number" step="100" value={o.band[0]} onChange={(e) => p.setObjective({ ...o, band: [+e.target.value, o.band[1]] })} /></label>
-          <label>대역 끝 (Hz)<input type="number" step="100" value={o.band[1]} onChange={(e) => p.setObjective({ ...o, band: [o.band[0], +e.target.value] })} /></label>
-          <label>측면 각도 (°)<input type="number" step="5" value={o.sideAngle} onChange={(e) => p.setObjective({ ...o, sideAngle: +e.target.value })} /></label>
-          <label>w 측면 레벨<input type="number" step="0.1" value={o.weights.level} onChange={setW('level')} /></label>
-          <label>w 수평 균일도<input type="number" step="0.1" value={o.weights.uniformity} onChange={setW('uniformity')} /></label>
-          <label>w 응답 평탄도<input type="number" step="0.1" value={o.weights.flatness} onChange={setW('flatness')} /></label>
-          <label>w 상하 누설<input type="number" step="0.1" value={o.weights.leakage} onChange={setW('leakage')} /></label>
-        </div>
-        <p className="muted small">점수 = w₁·측면 레벨 − w₂·수평 ±{o.spread}° 편차 − w₃·측면 응답 편차 − w₄·(상하 최대 − 측면), {o.band[0]}~{o.band[1]} Hz 평균. 가중치를 바꾸면 저장된 결과로 점수가 즉시 다시 계산됩니다.</p>
-      </details>
+        <Section title="점수 기준" meta={`${o.band[0]}-${o.band[1]} Hz`} open={false}>
+          <div className="prop-grid">
+            <label>대역 시작</label><div className="num-wrap"><input className="input" type="number" step="100" value={o.band[0]} onChange={(e) => p.setObjective({ ...o, band: [+e.target.value, o.band[1]] })} /><span className="unit">Hz</span></div>
+            <label>대역 끝</label><div className="num-wrap"><input className="input" type="number" step="100" value={o.band[1]} onChange={(e) => p.setObjective({ ...o, band: [o.band[0], +e.target.value] })} /><span className="unit">Hz</span></div>
+            <label>측면 각도</label><div className="num-wrap"><input className="input" type="number" step="5" value={o.sideAngle} onChange={(e) => p.setObjective({ ...o, sideAngle: +e.target.value })} /><span className="unit">°</span></div>
+            <label>w 측면 레벨</label><input className="input" type="number" step="0.1" value={o.weights.level} onChange={setW('level')} />
+            <label>w 수평 균일</label><input className="input" type="number" step="0.1" value={o.weights.uniformity} onChange={setW('uniformity')} />
+            <label>w 응답 평탄</label><input className="input" type="number" step="0.1" value={o.weights.flatness} onChange={setW('flatness')} />
+            <label>w 상하 누설</label><input className="input" type="number" step="0.1" value={o.weights.leakage} onChange={setW('leakage')} />
+          </div>
+          <p className="help">가중치를 바꾸면 저장된 결과로 점수를 즉시 재계산.</p>
+        </Section>
+      </div>
     </>
   );
 }
