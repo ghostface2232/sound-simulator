@@ -454,7 +454,13 @@ export default function App() {
         <div className="doc">
           <span className="sep">/</span>
           <input className="doc-name" aria-label="설계 이름" value={scene.name} onChange={(e) => updateScene({ ...scene, name: e.target.value }, true)} size={Math.max(6, Math.min(32, scene.name.length + 1))} disabled={!!preview} />
-          <div ref={diagRef} style={{ position: 'relative' }}>
+        </div>
+        <div className="topbar-actions">
+          {savePulse && <span className="chip ready"><CheckIcon />안에 저장됨</span>}
+          <button className="btn ghost icon" aria-label={theme === 'dark' ? '라이트 테마' : '다크 테마'} title={theme === 'dark' ? '라이트 테마' : '다크 테마'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <SunIcon /> : <MoonIcon />}</button>
+          <button className="btn ghost icon" aria-label="사이드 패널" aria-pressed={!ui.sideCollapsed} title="사이드 패널 접기/펼치기" onClick={() => setUi((u) => ({ ...u, sideCollapsed: !u.sideCollapsed }))}><SidebarIcon /></button>
+          <span className="topbar-sep" />
+          <div ref={diagRef} className="status-anchor">
             <button className="status-btn" aria-expanded={diagOpen} aria-label="실행 전 확인 목록"
               title={errorCount ? '실행을 막는 오류가 있습니다' : warningCount ? '결과 신뢰도에 영향을 주는 경고가 있습니다' : '실행 전 확인 통과'}
               onClick={() => setDiagOpen((v) => !v)}>
@@ -464,18 +470,12 @@ export default function App() {
               </span>
             </button>
             {diagOpen && (
-              <div className="popover diag-popover" role="dialog" aria-label="실행 전 확인">
+              <div className="popover right diag-popover" role="dialog" aria-label="실행 전 확인">
                 <div className="head"><span>실행 전 확인</span><span className="num">{actionable.length}건</span></div>
-                {actionable.length === 0 ? <p className="help" style={{ padding: '0 4px 6px' }}>형상과 수치 설정이 실행 가능한 상태입니다.</p> : <DiagnosticList items={actionable} />}
+                {actionable.length === 0 ? <p className="help" style={{ padding: '0 4px 6px' }}>이상 없음</p> : <DiagnosticList items={actionable} />}
               </div>
             )}
           </div>
-          {preview && <span className="chip accent dot">{preview.label}</span>}
-          {savePulse && <span className="chip ready"><CheckIcon />안에 저장됨</span>}
-        </div>
-        <div className="topbar-actions">
-          <button className="btn ghost icon" aria-label={theme === 'dark' ? '라이트 테마' : '다크 테마'} title={theme === 'dark' ? '라이트 테마' : '다크 테마'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <SunIcon /> : <MoonIcon />}</button>
-          <button className="btn ghost icon" aria-label="사이드 패널" aria-pressed={!ui.sideCollapsed} title="사이드 패널 접기/펼치기" onClick={() => setUi((u) => ({ ...u, sideCollapsed: !u.sideCollapsed }))}><SidebarIcon /></button>
           {status === 'running' ? (
             <button className="btn run-btn stop" onClick={stop}><StopIcon />중단 <span className="num" style={{ opacity: .75 }}>{Math.round(progress * 100)}%</span></button>
           ) : (

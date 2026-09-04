@@ -372,7 +372,9 @@ input[type="range"].range { width: 100%; height: 22px; margin: 0; accent-color: 
 .run-btn.stop:hover { filter: brightness(1.08); }
 .topbar-progress { position: absolute; left: 12px; right: 12px; bottom: 0; height: 2px; overflow: hidden; border-radius: 999px; }
 .topbar-progress span { display: block; height: 100%; background: var(--accent); transform-origin: left; transition: transform 100ms linear; }
-.diag-popover { top: 36px; left: 0; width: 320px; max-height: 60vh; overflow: auto; padding: 8px; }
+.status-anchor { position: relative; display: flex; }
+.topbar-sep { width: 1px; height: 18px; margin: 0 4px; background: var(--line-strong); }
+.diag-popover { top: 34px; right: 0; width: 320px; max-height: 60vh; overflow: auto; padding: 8px; }
 .diag-popover .head { padding: 2px 4px 8px; display: flex; align-items: center; justify-content: space-between; color: var(--ink-2); font-size: 11px; }
 
 .workbench {
