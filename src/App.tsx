@@ -224,7 +224,7 @@ export default function App() {
             ...v,
             result: m.result ? { ...m.result } : undefined,
             breakdown: m.result ? scoreResult({ ...m.result }, objective) : undefined,
-            warnings: m.warnings, error: m.error, elapsedMs: m.elapsedMs, evaluatedWith: paramsSigRef.current,
+            warnings: m.warnings, error: m.error, elapsedMs: m.elapsedMs, evaluatedWith: evalSigRef.current,
           }));
           if (m.result) setCmpSelected((prev) => new Set([...prev, m.id]));
           break;
@@ -253,6 +253,8 @@ export default function App() {
 
   const paramsSig = useMemo(() => JSON.stringify({ dx: params.dx, t: params.durationMs, f0: params.fMin, f1: params.fMax, sp: params.spongeCells }), [params]);
   const paramsSigRef = useRef(paramsSig); paramsSigRef.current = paramsSig;
+  /** Signature of the parameters actually sent with the running variant batch; results are labelled with this, not the live value. */
+  const evalSigRef = useRef(paramsSig);
   const objectiveRef = useRef(optSettings.objective); objectiveRef.current = optSettings.objective;
 
   useEffect(() => {
@@ -274,6 +276,7 @@ export default function App() {
     if (!workerRef.current) return;
     const items = variantsRef.current.filter((v) => !ids || ids.includes(v.id)).map((v) => ({ id: v.id, scene: v.scene }));
     if (items.length === 0) return;
+    evalSigRef.current = paramsSigRef.current;
     setCmpRunning(true); setMessage(''); setResult(null); setFrame(null); setGrid(null);
     workerRef.current.postMessage({ type: 'evaluate', items, params } satisfies WorkerIn);
   }, [params]);

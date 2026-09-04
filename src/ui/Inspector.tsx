@@ -237,14 +237,14 @@ export function Inspector(p: Props) {
         <Section title="실행 전 확인" meta={errors.length === 0 ? '이상 없음' : `${errors.length}`} open={errors.length > 0}>
           {errors.length === 0 ? <p className="help">이상 없음</p> : <DiagnosticList items={errors} />}
         </Section>
-        <Section title="해석 설정" meta={`dx ${params.dx} · ${params.durationMs} ms`}>
+        <Section title="해석 설정" meta={p.editable ? `dx ${params.dx} · ${params.durationMs} ms` : '계산 중 잠김'}>
           <div className="prop-grid">
-            <NumField label="격자 간격" unit="mm" step={0.25} min={0.25} max={4} value={params.dx} onChange={(v) => setParam('dx', v)} />
-            <NumField label="해석 시간" unit="ms" step={1} min={1} max={40} value={params.durationMs} onChange={(v) => setParam('durationMs', v)} />
-            <NumField label="최저 주파수" unit="Hz" step={50} min={20} max={5000} value={params.fMin} onChange={(v) => setParam('fMin', v)} />
-            <NumField label="최고 주파수" unit="Hz" step={1000} min={2000} max={40000} value={params.fMax} onChange={(v) => setParam('fMax', v)} />
-            <NumField label="흡수층" unit="cells" step={10} min={10} max={150} value={params.spongeCells} onChange={(v) => setParam('spongeCells', v)} />
-            <SelectField label="연산 장치" value={params.backend ?? 'auto'} onChange={(v) => p.setParams({ ...params, backend: v })}
+            <NumField label="격자 간격" unit="mm" step={0.25} min={0.25} max={4} value={params.dx} onChange={(v) => setParam('dx', v)} disabled={!p.editable} />
+            <NumField label="해석 시간" unit="ms" step={1} min={1} max={40} value={params.durationMs} onChange={(v) => setParam('durationMs', v)} disabled={!p.editable} />
+            <NumField label="최저 주파수" unit="Hz" step={50} min={20} max={5000} value={params.fMin} onChange={(v) => setParam('fMin', v)} disabled={!p.editable} />
+            <NumField label="최고 주파수" unit="Hz" step={1000} min={2000} max={40000} value={params.fMax} onChange={(v) => setParam('fMax', v)} disabled={!p.editable} />
+            <NumField label="흡수층" unit="cells" step={10} min={10} max={150} value={params.spongeCells} onChange={(v) => setParam('spongeCells', v)} disabled={!p.editable} />
+            <SelectField label="연산 장치" value={params.backend ?? 'auto'} onChange={(v) => p.setParams({ ...params, backend: v })} disabled={!p.editable}
               options={[{ value: 'auto', label: '자동 · WebGPU 우선' }, { value: 'gpu', label: 'WebGPU' }, { value: 'cpu', label: 'CPU' }]} />
           </div>
           {cost && <div className="cost-note"><InfoIcon />{cost.message}</div>}
