@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import type { Scene, PathShape, PathNode, Driver, ShapeRole } from '../engine/scene';
 import type { Diagnostic } from '../engine/checks';
 import {
-  bandNodes, bandOf, cornerNode, distToSegment, driverSegment, ellipsePath, isSmoothNode, nearestOnPath, pointInPolygon, sceneBounds,
+  bandNodes, bandOf, cornerNode, distToSegment, driverSegment, ellipsePath, isSmoothNode, nearestOnPath, pointInPolygon, polygonsOverlap, sceneBounds,
   type Band,
   segmentIsLine, shapeToPath, shapeToPolygon, smoothNode, splitSegment, type Pt,
 } from '../engine/geometry';
@@ -15,9 +15,21 @@ export interface GridInfo {
 
 export type Selection =
   | { kind: 'shape'; index: number; vertex?: number; handle?: 'in' | 'out'; side?: -1 | 1 }
+  | { kind: 'shapes'; indices: number[] }
   | { kind: 'driver'; index: number }
   | { kind: 'measure' }
   | null;
+
+export function selectedShapeIndices(selection: Selection): number[] {
+  if (selection?.kind === 'shapes') return selection.indices;
+  return selection?.kind === 'shape' ? [selection.index] : [];
+}
+
+export function shapeSelection(indices: number[]): Selection {
+  const unique = [...new Set(indices)].sort((a, b) => a - b);
+  if (unique.length === 0) return null;
+  return unique.length === 1 ? { kind: 'shape', index: unique[0] } : { kind: 'shapes', indices: unique };
+}
 
 export type Tool = 'select' | 'pen' | 'rect' | 'ellipse';
 
@@ -57,10 +69,19 @@ export const ERROR_COLOR = '#d62828';
 
 interface View { s: number; ox: number; oy: number }
 
+interface Marquee {
+  startPx: [number, number];
+  currentPx: [number, number];
+  base: number[];
+  hits: number[];
+  moved: boolean;
+}
+
 type Drag =
   | { kind: 'anchor'; index: number; node: number; orig: PathNode; start: Pt }
   | { kind: 'handle'; index: number; node: number; which: 'in' | 'out' }
   | { kind: 'shape'; index: number; orig: PathNode[]; start: Pt }
+  | { kind: 'shapes'; items: { index: number; orig: PathNode[] }[]; start: Pt }
   | { kind: 'bandEdge'; index: number; edge: 'start' | 'end'; band: Band }
   | { kind: 'bandMove'; index: number; band: Band; start: Pt }
   | { kind: 'driverEnd'; index: number; end: 0 | 1 }
@@ -68,10 +89,12 @@ type Drag =
   | { kind: 'measureRadius' }
   | { kind: 'measureCenter'; startZ: number; origZ: number }
   | { kind: 'pan'; startPx: [number, number]; origView: View }
+  | { kind: 'marquee'; gesture: Marquee }
   | { kind: 'rect'; start: Pt; current: Pt; ellipse: boolean; square: boolean }
   | { kind: 'pen'; node: number; startPx: [number, number]; dragged: boolean };
 
 const HANDLE_PX = 9;
+const MARQUEE_THRESHOLD_PX = 7;
 
 export function roleOf(s: { role?: ShapeRole; material: string }): ShapeRole {
   return s.role ?? (s.material === 'rigid' ? 'housing' : s.material === 'fabric' ? 'fabric' : 'slot');
@@ -106,6 +129,8 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
   const [penNodes, setPenNodes] = useState<PathNode[]>([]);
   const [mouseMm, setMouseMm] = useState<Pt | null>(null);
   const [rectDrag, setRectDrag] = useState<{ start: Pt; current: Pt; ellipse: boolean } | null>(null);
+  const [marquee, setMarquee] = useState<Marquee | null>(null);
+  const [panning, setPanning] = useState(false);
   const hatchRef = useRef<CanvasPattern | null>(null);
   const layerRef = useRef<HTMLCanvasElement | null>(null);
   const fittedRef = useRef(false);
@@ -252,6 +277,17 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     p.onToolDone();
   }, [penNodes, addShape, p]);
 
+  const shapeIndicesInRect = useCallback((a: [number, number], b: [number, number]): number[] => {
+    const left = Math.min(a[0], b[0]), right = Math.max(a[0], b[0]);
+    const top = Math.min(a[1], b[1]), bottom = Math.max(a[1], b[1]);
+    const box: Pt[] = [[left, top], [right, top], [right, bottom], [left, bottom]];
+    return p.scene.shapes.flatMap((shape, index) => {
+      const polygon = shapeToPolygon(shape);
+      const hit = [1, -1].some((side) => polygonsOverlap(polygon.map(([r, z]) => toPx(side * r, z)), box));
+      return hit ? [index] : [];
+    });
+  }, [p.scene.shapes, toPx]);
+
   // ---- hit testing -----------------------------------------------------------
   const hitTest = useCallback((px: number, py: number): { sel: Selection; drag: Drag | null } => {
     const v = viewRef.current;
@@ -319,19 +355,26 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     return { sel: null, drag: null };
   }, [p.scene, p.selection, toMm, nodesOf]);
 
-  // ---- mouse -------------------------------------------------------------------
-  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // ---- pointer gestures ----------------------------------------------------------
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     e.currentTarget.focus();
     const v = viewRef.current;
-    if (e.button === 1 || e.button === 2 || (e.altKey && p.tool === 'select' && !p.selection)) {
+    if (e.button === 1) {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
       dragRef.current = { kind: 'pan', startPx: [px, py], origView: v };
+      setPanning(true);
       return;
     }
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
     const [xm, zm] = toMm(px, py, v);
     const cur: Pt = [snapR(xm), snapV(zm)];
-    if (!p.editable) { dragRef.current = { kind: 'pan', startPx: [px, py], origView: v }; return; }
+    if (!p.editable) return;
+    setMarquee(null);
 
     if (p.tool === 'pen') {
       if (penNodes.length >= 3 && Math.hypot(penNodes[0].p[0] - Math.abs(xm), penNodes[0].p[1] - zm) <= HANDLE_PX / v.s) { finishPen(); return; }
@@ -346,11 +389,35 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       return;
     }
     const { sel, drag } = hitTest(px, py);
-    p.onSelect(sel);
-    dragRef.current = drag ?? { kind: 'pan', startPx: [px, py], origView: v };
+    const current = selectedShapeIndices(p.selection).filter((index) => !!p.scene.shapes[index]);
+    if (e.shiftKey && sel?.kind === 'shape') {
+      const next = current.includes(sel.index) ? current.filter((index) => index !== sel.index) : [...current, sel.index];
+      p.onSelect(shapeSelection(next));
+      dragRef.current = null;
+      return;
+    }
+    if (sel?.kind === 'shape' && p.selection?.kind === 'shapes' && current.includes(sel.index)) {
+      p.onSelect(shapeSelection(current));
+      dragRef.current = {
+        kind: 'shapes',
+        items: current.map((index) => ({ index, orig: cloneNodes(nodesOf(index)) })),
+        start: [Math.abs(xm), zm],
+      };
+      return;
+    }
+    if (sel) {
+      p.onSelect(sel);
+      dragRef.current = drag;
+      return;
+    }
+    const gesture: Marquee = {
+      startPx: [px, py], currentPx: [px, py], base: e.shiftKey ? current : [], hits: [], moved: false,
+    };
+    dragRef.current = { kind: 'marquee', gesture };
+    setMarquee(gesture);
   };
 
-  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     const v = viewRef.current;
@@ -392,6 +459,18 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         const [ldr, ldz] = axisLock(snapV(Math.abs(xm) - d.start[0]), snapV(zm - d.start[1]), e.shiftKey);
         const dr = Math.max(-minR, ldr), dz = ldz;
         writeNodes(d.index, d.orig.map((n) => translateNode(n, dr, dz)), false);
+        break;
+      }
+      case 'shapes': {
+        const minR = Math.min(...d.items.flatMap(({ orig }) => orig.flatMap((n) => [n.p[0], ...(n.hIn ? [n.hIn[0]] : []), ...(n.hOut ? [n.hOut[0]] : [])])));
+        const [ldr, ldz] = axisLock(snapV(Math.abs(xm) - d.start[0]), snapV(zm - d.start[1]), e.shiftKey);
+        const dr = Math.max(-minR, ldr), dz = ldz;
+        const shapes = scene.shapes.slice();
+        for (const item of d.items) {
+          const shape = shapeToPath(shapes[item.index]);
+          shapes[item.index] = { ...shape, nodes: item.orig.map((n) => translateNode(n, dr, dz)) } as PathShape;
+        }
+        p.onChange({ ...scene, shapes }, false);
         break;
       }
       case 'bandEdge': {
@@ -469,13 +548,34 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         });
         break;
       }
+      case 'marquee': {
+        const distance = Math.hypot(px - d.gesture.startPx[0], py - d.gesture.startPx[1]);
+        if (!d.gesture.moved && distance < MARQUEE_THRESHOLD_PX) break;
+        d.gesture.moved = true;
+        d.gesture.currentPx = [px, py];
+        d.gesture.hits = shapeIndicesInRect(d.gesture.startPx, d.gesture.currentPx);
+        setMarquee({ ...d.gesture, hits: [...d.gesture.hits] });
+        break;
+      }
     }
   };
 
-  const onMouseUp = () => {
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const d = dragRef.current;
     dragRef.current = null;
+    setPanning(false);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
     if (!d) return;
+    if (d.kind === 'marquee') {
+      if (d.gesture.moved) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        d.gesture.currentPx = [e.clientX - rect.left, e.clientY - rect.top];
+        d.gesture.hits = shapeIndicesInRect(d.gesture.startPx, d.gesture.currentPx);
+      }
+      p.onSelect(shapeSelection(d.gesture.moved ? [...d.gesture.base, ...d.gesture.hits] : d.gesture.base));
+      setMarquee(null);
+      return;
+    }
     if (d.kind === 'rect') {
       setRectDrag(null);
       const r0 = Math.min(d.start[0], d.current[0]), r1 = Math.max(d.start[0], d.current[0]);
@@ -488,6 +588,16 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     }
     if (d.kind === 'pen' || d.kind === 'pan') return;
     p.onChange(p.scene, true);
+  };
+
+  const onPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setPanning(false);
+    setMarquee(null);
+    setRectDrag(null);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    if (d && !['pan', 'pen', 'rect', 'marquee'].includes(d.kind)) p.onChange(p.scene, true);
   };
 
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -543,6 +653,10 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
           p.onChange({ ...p.scene, shapes: p.scene.shapes.filter((_, i) => i !== sel.index) }, true);
           p.onSelect(null);
         }
+      } else if (sel.kind === 'shapes') {
+        const selected = new Set(sel.indices);
+        p.onChange({ ...p.scene, shapes: p.scene.shapes.filter((_, i) => !selected.has(i)) }, true);
+        p.onSelect(null);
       } else if (sel.kind === 'driver') {
         p.onChange({ ...p.scene, drivers: p.scene.drivers.filter((_, i) => i !== sel.index) }, true);
         p.onSelect(null);
@@ -770,8 +884,18 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
       }
     };
+    const groupedIndices = marquee
+      ? [...new Set([...marquee.base, ...marquee.hits])].filter((index) => !!scene.shapes[index])
+      : sel?.kind === 'shapes' ? sel.indices.filter((index) => !!scene.shapes[index]) : null;
     const selBand = sel?.kind === 'shape' && scene.shapes[sel.index] ? bandOf(scene.shapes[sel.index]) : null;
-    if (sel?.kind === 'shape' && selBand) {
+    if (groupedIndices) {
+      ctx.save();
+      ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2; ctx.setLineDash([]);
+      for (const index of groupedIndices) {
+        for (const mirror of [false, true]) { pathNodes(ctx, shapeNodes[index], mirror); ctx.stroke(); }
+      }
+      ctx.restore();
+    } else if (sel?.kind === 'shape' && selBand) {
       const nodes = shapeNodes[sel.index];
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 2;
       for (const mirror of [false, true]) { pathNodes(ctx, nodes, mirror); ctx.stroke(); }
@@ -822,6 +946,19 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       square(0, m.zCenter + m.radius, false); square(0, m.zCenter, true);
     }
 
+    if (marquee) {
+      const left = Math.min(marquee.startPx[0], marquee.currentPx[0]);
+      const top = Math.min(marquee.startPx[1], marquee.currentPx[1]);
+      const width = Math.abs(marquee.currentPx[0] - marquee.startPx[0]);
+      const height = Math.abs(marquee.currentPx[1] - marquee.startPx[1]);
+      ctx.save();
+      ctx.fillStyle = 'rgba(47,111,228,0.075)';
+      ctx.fillRect(left, top, width, height);
+      ctx.strokeStyle = 'rgba(47,111,228,0.9)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      ctx.strokeRect(left + 0.5, top + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
+      ctx.restore();
+    }
+
     // Pen preview.
     if (p.tool === 'pen' && penNodes.length > 0) {
       ctx.strokeStyle = SELECT_COLOR; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
@@ -849,7 +986,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
       ctx.setLineDash([]);
     }
 
-  }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, toPx, snapR, snapV]);
+  }, [p.scene, p.selection, p.diagnostics, p.tool, p.spongeMm, view, size, fieldImage, maskImage, penNodes, mouseMm, rectDrag, marquee, toPx, snapR, snapV]);
 
   // Debug hook for automated UI checks: mm -> canvas px mapping and the scene being drawn.
   useEffect(() => {
@@ -858,7 +995,7 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
     };
   }, [view, p.scene, p.selection, toPx]);
 
-  const cursor = p.tool !== 'select' ? 'crosshair' : dragRef.current?.kind === 'pan' ? 'grabbing' : 'default';
+  const cursor = panning ? 'grabbing' : p.tool !== 'select' || marquee ? 'crosshair' : 'default';
   const scaleBarMm = view.s > 12 ? 5 : view.s > 4 ? 10 : view.s > 1.2 ? 50 : 100;
 
   const anchorPopover = (() => {
@@ -942,10 +1079,12 @@ export const SectionCanvas = forwardRef<SectionCanvasHandle, Props>(function Sec
         className="section-canvas"
         style={{ width: size.w, height: size.h, cursor }}
         tabIndex={0}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={() => { if (dragRef.current?.kind === 'pan') dragRef.current = null; setMouseMm(null); }}
+        title="빈 공간 드래그: 영역 선택 · 가운데 버튼 드래그: 화면 이동"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onPointerLeave={() => { if (!dragRef.current) setMouseMm(null); }}
         onDoubleClick={onDoubleClick}
         onKeyDown={onKeyDown}
         onContextMenu={(e) => e.preventDefault()}

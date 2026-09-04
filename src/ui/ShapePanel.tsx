@@ -3,7 +3,7 @@ import type { Scene, Driver, ShapeRole, Material, PathNode } from '../engine/sce
 import { bandNodes, bandOf, cornerNode, defaultFabric, defaultSlot, driverBodyShape, materialForRole, maxAngleAboveFloor, rigidZRange, shapeToPath, smoothNode, type BandPlace, type Pt } from '../engine/geometry';
 import { validateScene } from '../engine/checks';
 import { sceneToSvg, svgToShapes } from '../engine/svg';
-import { ROLE_COLORS, type Selection } from './SectionCanvas';
+import { ROLE_COLORS, roleOf, type Selection } from './SectionCanvas';
 
 interface Props {
   scene: Scene;
@@ -121,7 +121,28 @@ export function ShapePanel(p: Props) {
 
   let props: React.ReactNode;
   const selBand = selection?.kind === 'shape' && scene.shapes[selection.index] ? bandOf(scene.shapes[selection.index]) : null;
-  if (selection?.kind === 'shape' && selBand) {
+  if (selection?.kind === 'shapes') {
+    const indices = selection.indices.filter((index) => !!scene.shapes[index]);
+    props = (
+      <>
+        <h3>형상 {indices.length}개 선택</h3>
+        <div className="multi-selection-summary">
+          {indices.map((index) => {
+            const shape = scene.shapes[index];
+            const role = roleOf(shape);
+            return <span key={index}><i className="dot" style={{ background: ROLE_COLORS[role].fill, borderColor: ROLE_COLORS[role].stroke }} />{shape.label || `형상 ${index + 1}`}</span>;
+          })}
+        </div>
+        <div className="row">
+          <button onClick={() => {
+            const selected = new Set(indices);
+            p.onChange({ ...scene, shapes: scene.shapes.filter((_, index) => !selected.has(index)) });
+            p.onSelect(null);
+          }}>선택 삭제</button>
+        </div>
+      </>
+    );
+  } else if (selection?.kind === 'shape' && selBand) {
     const s = shapeToPath(scene.shapes[selection.index]);
     const i = selection.index;
     const role = s.role ?? 'slot';

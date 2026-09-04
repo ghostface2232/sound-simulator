@@ -280,6 +280,8 @@ label.grow textarea { flex: 1; }
 .props-collapsed { padding-block: 2px; background: rgba(255,255,255,.42); box-shadow: 0 0 0 1px var(--line); }
 .props h3 { margin: 0; display: flex; align-items: center; gap: 7px; font-size: 13px; line-height: 1.3; letter-spacing: -0.015em; }
 .props .dot { display: inline-block; width: 10px; height: 10px; flex: 0 0 auto; border: 1.5px solid; border-radius: 3px; }
+.multi-selection-summary { max-height: 132px; overflow-y: auto; display: grid; gap: 5px; }
+.multi-selection-summary span { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 11.5px; line-height: 1.35; }
 .measure-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .measure-auto-row label { flex: 1; }
 
@@ -505,7 +507,7 @@ table.variants td.actions button { margin-inline-end: 3px; }
   box-shadow: var(--shadow-float);
 }
 .section-wrap { position: relative; width: 100%; height: 100%; }
-.section-canvas { display: block; border-radius: 20px; outline: none; background: var(--canvas); }
+.section-canvas { display: block; border-radius: 20px; outline: none; background: var(--canvas); touch-action: none; user-select: none; }
 .section-canvas:focus-visible { box-shadow: inset 0 0 0 3px rgba(29,32,30,.18); }
 .anchor-popover {
   position: absolute; z-index: 7;
