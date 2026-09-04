@@ -113,7 +113,7 @@ async function main() {
 
   if (doConvergence) {
     console.log('\nconvergence sweep');
-    const dxs = [2, 1.5, 1];
+    const dxs = [1.5, 1, 0.75];
     const cases: CaseResult[] = [];
     for (const dx of dxs) {
       const c = dx === baseDx ? base : await runCase(dx);
@@ -125,13 +125,15 @@ async function main() {
     if (errs[errs.length - 1] > errs[0] + 0.1) { ok = false; console.log('  -> FAIL: error grows with refinement'); }
     const a = cases[cases.length - 2], b = cases[cases.length - 1];
     let maxDiff = 0;
+    let maxDiffAt = '';
     for (const [key, v] of b.pattern) {
       const [fStr, thStr] = key.split(':');
       const t = theoryDb(Number(thStr), A_MM / 1000, Number(fStr));
       if (t <= NULL_FLOOR_DB) continue;
-      maxDiff = Math.max(maxDiff, Math.abs(v - (a.pattern.get(key) ?? v)));
+      const diff = Math.abs(v - (a.pattern.get(key) ?? v));
+      if (diff > maxDiff) { maxDiff = diff; maxDiffAt = key; }
     }
-    console.log(`  max |Δ| between dx ${a.dx} and ${b.dx}: ${maxDiff.toFixed(2)} dB (tolerance ${CONVERGENCE_TOL_DB})`);
+    console.log(`  max |Δ| between dx ${a.dx} and ${b.dx}: ${maxDiff.toFixed(2)} dB at ${maxDiffAt.replace(':', ' Hz, ')}° (tolerance ${CONVERGENCE_TOL_DB})`);
     if (maxDiff > CONVERGENCE_TOL_DB) { ok = false; console.log('  -> FAIL: not converged'); }
   }
 

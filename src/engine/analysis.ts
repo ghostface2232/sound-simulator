@@ -58,15 +58,47 @@ export function nearestBin(freqs: Float32Array, f: number): number {
   return best;
 }
 
+/**
+ * Response at an exact frequency, linearly interpolated between neighbouring
+ * FFT bins in dB. Using the nearest bin makes the requested frequency depend
+ * on dt/nfft, which can create false differences when comparing simulations
+ * that use different grid spacings.
+ */
+export function sliceAtFrequency(res: SimResult, f: number): Float32Array {
+  const { freqs } = res;
+  const nFreq = freqs.length;
+  const out = new Float32Array(res.angles.length);
+  if (nFreq === 0) return out;
+
+  let k0 = 0, k1 = 0, mix = 0;
+  if (f <= freqs[0]) {
+    k0 = k1 = 0;
+  } else if (f >= freqs[nFreq - 1]) {
+    k0 = k1 = nFreq - 1;
+  } else {
+    let lo = 0, hi = nFreq - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (freqs[mid] <= f) lo = mid; else hi = mid;
+    }
+    k0 = lo; k1 = hi;
+    mix = (f - freqs[k0]) / (freqs[k1] - freqs[k0]);
+  }
+
+  for (let a = 0; a < out.length; a++) {
+    const row = a * nFreq;
+    const v0 = res.db[row + k0];
+    out[a] = k0 === k1 ? v0 : v0 + (res.db[row + k1] - v0) * mix;
+  }
+  return out;
+}
+
 /** Directivity at one frequency, normalised so the maximum is 0 dB. */
 export function polarAt(res: SimResult, f: number): { angles: Float32Array; db: Float32Array } {
-  const k = nearestBin(res.freqs, f);
-  const n = res.angles.length;
-  const nFreq = res.freqs.length;
-  const out = new Float32Array(n);
+  const out = sliceAtFrequency(res, f);
   let max = -Infinity;
-  for (let a = 0; a < n; a++) { out[a] = res.db[a * nFreq + k]; if (out[a] > max) max = out[a]; }
-  for (let a = 0; a < n; a++) out[a] -= max;
+  for (let a = 0; a < out.length; a++) if (out[a] > max) max = out[a];
+  for (let a = 0; a < out.length; a++) out[a] -= max;
   return { angles: res.angles, db: out };
 }
 

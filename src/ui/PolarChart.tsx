@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { SimResult } from '../engine/analysis';
-import { nearestBin } from '../engine/analysis';
+import { sliceAtFrequency } from '../engine/analysis';
 import { readCanvasTheme } from './theme';
 
 export interface PolarSeries {
@@ -58,11 +58,9 @@ export function PolarChart({ series, freq, range = 30, normalize = 'each', theme
       if (series.length === 0) return;
 
       const curves = series.map((s) => {
-        const k = nearestBin(s.result.freqs, freq);
-        const nF = s.result.freqs.length;
-        const db = new Float32Array(s.result.angles.length);
+        const db = sliceAtFrequency(s.result, freq);
         let max = -Infinity;
-        for (let a = 0; a < db.length; a++) { db[a] = s.result.db[a * nF + k]; if (db[a] > max) max = db[a]; }
+        for (let a = 0; a < db.length; a++) if (db[a] > max) max = db[a];
         return { s, db, max };
       });
       const sharedMax = Math.max(...curves.map((c) => c.max));
