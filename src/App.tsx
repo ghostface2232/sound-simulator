@@ -55,7 +55,10 @@ function loadUi(): UiPrefs {
 
 export default function App() {
   const [activity, setActivity] = useState<Activity>('layers');
-  const [theme, setTheme] = useState<ThemeName>(loadTheme);
+  const [theme, setThemeState] = useState<ThemeName>(loadTheme);
+  // Apply the document palette before React renders with the new key: canvases and charts read
+  // CSS variables during render/effects, and child effects run before this component's effects.
+  const setTheme = useCallback((t: ThemeName) => { applyTheme(t); invalidateCanvasTheme(); setThemeState(t); }, []);
   const [ui, setUi] = useState<UiPrefs>(loadUi);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
@@ -63,7 +66,6 @@ export default function App() {
   const diagRef = useRef<HTMLDivElement>(null);
   useDismiss(shortcutsRef, shortcutsOpen, useCallback(() => setShortcutsOpen(false), []));
   useDismiss(diagRef, diagOpen, useCallback(() => setDiagOpen(false), []));
-  useEffect(() => { applyTheme(theme); invalidateCanvasTheme(); }, [theme]);
   useEffect(() => { try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch { /* storage unavailable */ } }, [ui]);
 
   const [presetKey, setPresetKey] = useState<string>('side-radial');
