@@ -17,7 +17,17 @@ const base = {
 const I = (d: React.ReactNode) => (props: IconProps) => <svg {...base} {...props}>{d}</svg>;
 
 // Brand / workflow
-export const WaveIcon = I(<path d="M3 12h2.2c1.5 0 1.5-5.5 3-5.5s1.5 11 3 11 1.5-15 3-15 1.5 19 3 19 1.5-9.5 3-9.5H21" />);
+/** Brand mark: the r-z axis with mirrored wavefronts, i.e. an axisymmetric radiation section. */
+export function LogoMark(props: IconProps) {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" {...props}>
+      <path d="M12 3.5v17" opacity=".45" strokeDasharray="1.5 2.5" />
+      <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+      <path d="M15.4 7.1a6 6 0 0 1 0 9.8M8.6 7.1a6 6 0 0 0 0 9.8" />
+      <path d="M17.5 4.2a9.5 9.5 0 0 1 0 15.6M6.5 4.2a9.5 9.5 0 0 0 0 15.6" opacity=".55" />
+    </svg>
+  );
+}
 export const LayersIcon = I(<><path d="m12 3 8.5 4.5L12 12 3.5 7.5 12 3Z" /><path d="m3.5 12 8.5 4.5 8.5-4.5" /><path d="m3.5 16.5 8.5 4.5 8.5-4.5" /></>);
 export const LibraryIcon = I(<><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.6" /><path d="M17 13.5v7M13.5 17h7" /></>);
 export const ExploreIcon = I(<><path d="M4 17.5 9 12l3 3 8-9" /><path d="M15 6h5v5" /></>);

@@ -352,9 +352,9 @@ input[type="range"].range { width: 100%; height: 22px; margin: 0; accent-color: 
   position: relative; z-index: 30;
 }
 .brand { display: flex; align-items: center; gap: 8px; }
-.brand-mark { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 7px; background: var(--primary); color: var(--ink-inverse); }
-.brand-mark svg { width: 15px; height: 15px; stroke-width: 2.2; }
-.brand strong { font-family: var(--font-display); font-size: 13px; letter-spacing: -0.01em; }
+.brand-mark { width: 22px; height: 22px; display: grid; place-items: center; color: var(--ink); }
+.brand-mark svg { width: 22px; height: 22px; }
+.brand strong { font-family: var(--font-display); font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
 .doc { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .doc .sep { color: var(--ink-3); }
 .doc-name {

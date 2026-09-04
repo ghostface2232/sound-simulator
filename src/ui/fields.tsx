@@ -60,7 +60,7 @@ export function DiagnosticList({ items }: { items: Diagnostic[] }) {
       {items.map((d, i) => (
         <li key={`${d.code}-${i}`} className={`diag-${d.severity}`}>
           {d.severity === 'info' ? <InfoIcon /> : <AlertIcon />}
-          <span><span className="code">{d.severity === 'error' ? '오류' : d.severity === 'warning' ? '확인' : '정보'}</span><span className="msg">{d.message}</span></span>
+          <span><span className="code">{d.severity === 'error' ? '오류' : d.severity === 'warning' ? '경고' : '정보'}</span><span className="msg">{d.message}</span></span>
         </li>
       ))}
     </ul>

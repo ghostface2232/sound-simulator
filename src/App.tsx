@@ -24,7 +24,7 @@ import { DiagnosticList, useDismiss } from './ui/fields';
 import { applyTheme, invalidateCanvasTheme, loadTheme, type ThemeName } from './ui/theme';
 import {
   AlertIcon, CheckIcon, EllipseIcon, ExploreIcon, FitIcon, FrameIcon, GridIcon, KeyboardIcon, LayersIcon, LibraryIcon, MoonIcon, PenIcon,
-  PlayIcon, RectangleIcon, RedoIcon, SelectIcon, SidebarIcon, StopIcon, SunIcon, UndoIcon, VariantsIcon, WaveIcon, ZoomInIcon, ZoomOutIcon,
+  PlayIcon, RectangleIcon, RedoIcon, SelectIcon, SidebarIcon, StopIcon, SunIcon, UndoIcon, VariantsIcon, LogoMark, ZoomInIcon, ZoomOutIcon,
 } from './ui/Icons';
 
 type Status = 'idle' | 'running' | 'done' | 'error';
@@ -448,17 +448,19 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand" aria-label="Speaker Sim">
-          <span className="brand-mark"><WaveIcon /></span>
+          <span className="brand-mark"><LogoMark /></span>
           <strong>Speaker Sim</strong>
         </div>
         <div className="doc">
           <span className="sep">/</span>
           <input className="doc-name" aria-label="설계 이름" value={scene.name} onChange={(e) => updateScene({ ...scene, name: e.target.value }, true)} size={Math.max(6, Math.min(32, scene.name.length + 1))} disabled={!!preview} />
           <div ref={diagRef} style={{ position: 'relative' }}>
-            <button className="status-btn" aria-expanded={diagOpen} aria-label="실행 전 확인 목록" onClick={() => setDiagOpen((v) => !v)}>
+            <button className="status-btn" aria-expanded={diagOpen} aria-label="실행 전 확인 목록"
+              title={errorCount ? '실행을 막는 오류가 있습니다' : warningCount ? '결과 신뢰도에 영향을 주는 경고가 있습니다' : '실행 전 확인 통과'}
+              onClick={() => setDiagOpen((v) => !v)}>
               <span className={`chip ${errorCount ? 'error' : warningCount ? 'warning' : 'ready'}`}>
-                {errorCount ? <AlertIcon /> : <CheckIcon />}
-                {errorCount ? `오류 ${errorCount}` : warningCount ? `확인 ${warningCount}` : '실행 가능'}
+                {errorCount || warningCount ? <AlertIcon /> : <CheckIcon />}
+                {errorCount ? `오류 ${errorCount}건` : warningCount ? `경고 ${warningCount}건` : '실행 가능'}
               </span>
             </button>
             {diagOpen && (
