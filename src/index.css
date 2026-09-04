@@ -41,7 +41,7 @@
   --line-strong: rgba(255, 255, 255, 0.13);
   --ink: #ebeced;
   --ink-2: #a5a9af;
-  --ink-3: #6f747b;
+  --ink-3: #80858d;
   --ink-inverse: #0e0f11;
   --accent: #4c8dff;
   --accent-ink: #9cc0ff;
@@ -105,7 +105,7 @@
   --line-strong: rgba(20, 22, 26, 0.16);
   --ink: #141619;
   --ink-2: #5b6068;
-  --ink-3: #8a9099;
+  --ink-3: #666e76;
   --ink-inverse: #ffffff;
   --accent: #2f6fe4;
   --accent-ink: #2559c0;
@@ -480,8 +480,11 @@ input[type="range"].range { width: 100%; height: 22px; margin: 0; accent-color: 
 .cand .metrics div { padding: 4px 6px; border-radius: 5px; background: var(--bg-hover); }
 .cand .metrics dt { color: var(--ink-3); font-size: 9.5px; }
 .cand .metrics dd { margin: 1px 0 0; font-family: var(--font-mono); font-size: 11px; }
-.cand .foot { grid-column: 1 / -1; display: flex; gap: 4px; }
-.cand .foot .btn { flex: 1; }
+.cand .foot { grid-column: 1 / -1; display: grid; grid-template-columns: .8fr 1.45fr 24px; gap: 4px; }
+.cand .foot .variant-replace { grid-column: 1 / -1; }
+.cand .foot .variant-delete { grid-column: 3; grid-row: 1; width: 24px; }
+.variant-confirm { grid-column: 1 / -1; display: grid; gap: 7px; padding: 8px; border-radius: 6px; background: var(--danger-soft); color: var(--ink); font-size: 11px; line-height: 1.4; }
+.variant-confirm > div { display: flex; justify-content: flex-end; gap: 4px; }
 .cand .name-input { min-width: 0; min-height: 22px; padding: 0 4px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); font-weight: 600; font-size: 11.5px; }
 .cand .name-input:hover { background: var(--bg-hover); }
 .cand .name-input:focus { outline: none; background: var(--bg-input); box-shadow: 0 0 0 1px var(--accent) inset; }

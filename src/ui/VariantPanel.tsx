@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Scene } from '../engine/scene';
 import type { SimResult } from '../engine/analysis';
 import type { Diagnostic } from '../engine/checks';
@@ -42,6 +43,7 @@ interface Props {
 }
 
 export function VariantPanel(p: Props) {
+  const [confirmUpdateId, setConfirmUpdateId] = useState<string | null>(null);
   const ranked = [...p.variants].sort((a, b) => (b.breakdown?.score ?? -Infinity) - (a.breakdown?.score ?? -Infinity));
   const best = ranked.find((v) => v.breakdown && Number.isFinite(v.breakdown.score));
   const o = p.objective;
@@ -96,12 +98,22 @@ export function VariantPanel(p: Props) {
                     </dl>
                   </div>
                   {v.error && <div className="notice error" style={{ gridColumn: '1 / -1' }}>{v.error}</div>}
-                  <div className="foot" onClick={(e) => e.stopPropagation()}>
-                    <button className="btn sm" onClick={() => p.onEvaluate([v.id])} disabled={p.busy} title="이 안만 평가"><PlayIcon />평가</button>
-                    <button className="btn sm" onClick={() => p.onLoad(v)} disabled={p.busy} title="이 안을 편집기로 불러오기"><ArrowLeftIcon />편집</button>
-                    <button className="btn sm" onClick={() => p.onUpdateFromEditor(v)} disabled={p.busy} title="편집 중인 형상으로 이 안을 덮어쓰기"><RefreshIcon />갱신</button>
-                    <button className="btn sm icon danger" aria-label={`${v.name} 삭제`} onClick={() => p.onDelete(v)} disabled={p.busy}><TrashIcon /></button>
-                  </div>
+                  {confirmUpdateId === v.id ? (
+                    <div className="variant-confirm" role="group" aria-label={`${v.name} 교체 확인`} onClick={(e) => e.stopPropagation()}>
+                      <span>현재 모델로 이 안을 덮어쓸까요?</span>
+                      <div>
+                        <button className="btn sm" onClick={() => setConfirmUpdateId(null)}>취소</button>
+                        <button className="btn sm danger" onClick={() => { p.onUpdateFromEditor(v); setConfirmUpdateId(null); }} disabled={p.busy}>덮어쓰기</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="foot" onClick={(e) => e.stopPropagation()}>
+                      <button className="btn sm" onClick={() => p.onEvaluate([v.id])} disabled={p.busy} title="이 안만 평가"><PlayIcon />평가</button>
+                      <button className="btn sm variant-edit" onClick={() => p.onLoad(v)} disabled={p.busy} title="이 안을 편집기로 불러오기 · 실행 취소 가능"><ArrowLeftIcon />불러오기</button>
+                      <button className="btn sm variant-replace" onClick={() => setConfirmUpdateId(v.id)} disabled={p.busy} title="현재 모델로 이 안 덮어쓰기"><RefreshIcon />덮어쓰기</button>
+                      <button className="btn sm icon danger variant-delete" aria-label={`${v.name} 삭제`} onClick={() => p.onDelete(v)} disabled={p.busy}><TrashIcon /></button>
+                    </div>
+                  )}
                 </article>
               );
             })}
